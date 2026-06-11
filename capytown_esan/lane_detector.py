@@ -69,7 +69,7 @@ class LaneDetector(Node):
         self.warp_size = None
 
         self.sub     = self.create_subscription(
-            Image, '/camera/image_raw', self.on_image, 10)
+            Image, '/image_raw', self.on_image, 10)
         self.pub_err = self.create_publisher(Float32, '/lane_error', 10)
         self.pub_dbg = self.create_publisher(Image, '/lane/debug_image', 10)
 
