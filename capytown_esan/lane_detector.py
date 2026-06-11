@@ -117,6 +117,9 @@ class LaneDetector(Node):
             self.get_logger().error(f'cv_bridge: {e}')
             return
 
+        # Rotar imagen 90° antihorario para corregir cámara apuntando a la derecha
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
         h, w = frame.shape[:2]
 
         if self.M is None:
