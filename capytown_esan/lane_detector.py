@@ -145,28 +145,17 @@ class LaneDetector(Node):
         x_white  = self._centroid_x(mask_white[band, :])
         x_yellow = self._centroid_x(mask_yellow[band, :])
 
-        # 4) Centro del carril (px) → error lateral (m)
-        #
-        # Carril interno: amarillo a la IZQUIERDA, blanco a la DERECHA.
-        # Si solo se ve una línea, se estima la otra usando lane_width_px.
-        # error_m > 0  →  centro del carril a la derecha del robot.
+        # 4) Seguir solo la línea amarilla (izquierda del carril).
+        # El robot se mantiene a lane_width_px/2 a la derecha de la línea amarilla.
+        # Si no se detecta amarillo → NaN (el controlador frena).
         lane_width_px = self.lane_width_m * self.px_per_meter
 
-        if x_white is not None and x_yellow is not None:
-            center_px = (x_white + x_yellow) / 2.0
-        elif x_white is not None:
-            # Solo línea blanca (derecha): estima amarilla a lane_width_px a su izquierda
-            center_px = x_white - lane_width_px / 2.0
-        elif x_yellow is not None:
-            # Solo línea amarilla (izquierda): estima blanca a lane_width_px a su derecha
+        if x_yellow is not None:
             center_px = x_yellow + lane_width_px / 2.0
+            error_m   = (center_px - w / 2.0) / self.px_per_meter
         else:
             center_px = None
-
-        if center_px is not None:
-            error_m = (center_px - w / 2.0) / self.px_per_meter
-        else:
-            error_m = float('nan')
+            error_m   = float('nan')
 
         out      = Float32()
         out.data = float(error_m)
