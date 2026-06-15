@@ -147,15 +147,34 @@ class LaneDetector(Node):
         lane_width_px = self.lane_width_m * self.px_per_meter
 
         if x_yellow is not None and x_white is not None:
-            center_px = (x_yellow + x_white) / 2.0        # centro exacto entre las dos
+            center_px = (x_yellow + x_white) / 2.0
         elif x_yellow is not None:
-            center_px = x_yellow + lane_width_px / 2.0    # solo amarilla: offset derecha
+            center_px = x_yellow + lane_width_px / 2.0
         elif x_white is not None:
-            center_px = x_white - lane_width_px / 2.0     # solo blanca: offset izquierda
+            center_px = x_white - lane_width_px / 2.0
         else:
             center_px = None
 
-        error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
+        if center_px is not None:
+            error_m = (center_px - w / 2.0) / self.px_per_meter
+
+            # Anticipación de límites: empuja de vuelta ANTES de cruzar la línea
+            # Zona segura: amarillo debe estar a la izquierda del 40% y blanco a la derecha del 60%
+            yellow_safe = w * 0.40
+            white_safe  = w * 0.60
+            boundary_gain = 2.5
+
+            if x_yellow is not None and x_yellow > yellow_safe:
+                # Amarillo acercándose al centro → anticipar giro a la derecha
+                repulsion = (x_yellow - yellow_safe) / self.px_per_meter * boundary_gain
+                error_m += repulsion
+
+            if x_white is not None and x_white < white_safe:
+                # Blanco acercándose al centro → anticipar giro a la izquierda
+                repulsion = (white_safe - x_white) / self.px_per_meter * boundary_gain
+                error_m -= repulsion
+        else:
+            error_m = float('nan')
 
         out      = Float32()
         out.data = float(error_m)
