@@ -5,6 +5,7 @@ lane_controller:
     kp: 4.0          # proporcional (oscila si es muy alto)
     ki: 0.3          # integral (corrige sesgo persistente)
     kd: 0.4          # derivativo (amortigua oscilaciones)
+    kff: 1.0         # feed-forward de tendencia (anticipa giros)
 
     # Velocidad de crucero — subir progresivamente: 0.10 → 0.15 → 0.20
     linear_speed: 0.14   # m/s  (reducido 30% para calibración)
@@ -15,3 +16,5 @@ lane_controller:
     control_rate: 30.0   # Hz del lazo de control
     recovery_w: 1.05     # rad/s = 60 deg/s girando al buscar la línea perdida
     recovery_v: 0.05     # m/s avance lento mientras busca la línea
+    history_size: 10     # muestras para calcular tendencia de giro (~0.33s)
+    turn_threshold: 0.3  # |ω| rad/s mínimo para activar feed-forward predictivo
