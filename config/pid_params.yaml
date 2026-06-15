@@ -13,5 +13,5 @@ lane_controller:
     integral_limit: 0.5  # anti-windup: límite acumulador integral
     error_timeout: 0.5   # s — sin /lane_error → modo recuperación
     control_rate: 30.0   # Hz del lazo de control
-    recovery_w: 0.9      # rad/s girando al buscar la línea perdida
+    recovery_w: 1.05     # rad/s = 60 deg/s girando al buscar la línea perdida
     recovery_v: 0.0      # m/s avance durante recuperación (0 = solo gira)
