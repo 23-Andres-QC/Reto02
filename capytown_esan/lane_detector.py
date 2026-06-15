@@ -133,10 +133,20 @@ class LaneDetector(Node):
         mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_OPEN,  kernel)
         mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_CLOSE, kernel)
 
-        # Excluir píxeles amarillos del blanco (evita contaminación cruzada)
+        # Dividir imagen: izquierda solo amarillo, derecha solo blanco
+        half = w // 2
+        left_mask  = np.zeros((h, w), dtype=np.uint8)
+        left_mask[:, :half] = 255
+        right_mask = np.zeros((h, w), dtype=np.uint8)
+        right_mask[:, half:] = 255
+
+        mask_yellow    = cv2.bitwise_and(mask_yellow,    left_mask)
+        mask_white_raw = cv2.bitwise_and(mask_white_raw, right_mask)
+
+        # Excluir píxeles amarillos del blanco
         mask_white_raw = cv2.bitwise_and(mask_white_raw, cv2.bitwise_not(mask_yellow))
 
-        # Filtrar blanco: solo líneas consecutivas (alto/estrecho), no manchas grandes
+        # Filtrar blanco: solo líneas consecutivas, no manchas grandes
         mask_white = self._filter_line_shape(mask_white_raw)
 
         row  = int(self.look_ahead_row * h)
@@ -144,7 +154,12 @@ class LaneDetector(Node):
         x_yellow = self._centroid_x(mask_yellow[band, :])
         x_white  = self._centroid_x(mask_white[band, :])
 
+        # Validar distancia entre líneas: solo aceptar blanco dentro del umbral de carril
         lane_width_px = self.lane_width_m * self.px_per_meter
+        if x_yellow is not None and x_white is not None:
+            dist_px = x_white - x_yellow
+            if dist_px < lane_width_px * 0.6 or dist_px > lane_width_px * 1.3:
+                x_white = None  # blanco fuera del umbral de 22cm → ignorar
 
         if x_yellow is not None and x_white is not None:
             center_px = (x_yellow + x_white) / 2.0
@@ -155,26 +170,7 @@ class LaneDetector(Node):
         else:
             center_px = None
 
-        if center_px is not None:
-            error_m = (center_px - w / 2.0) / self.px_per_meter
-
-            # Anticipación de límites: empuja de vuelta ANTES de cruzar la línea
-            # Zona segura: amarillo debe estar a la izquierda del 40% y blanco a la derecha del 60%
-            yellow_safe = w * 0.40
-            white_safe  = w * 0.60
-            boundary_gain = 2.5
-
-            if x_yellow is not None and x_yellow > yellow_safe:
-                # Amarillo acercándose al centro → anticipar giro a la derecha
-                repulsion = (x_yellow - yellow_safe) / self.px_per_meter * boundary_gain
-                error_m += repulsion
-
-            if x_white is not None and x_white < white_safe:
-                # Blanco acercándose al centro → anticipar giro a la izquierda
-                repulsion = (white_safe - x_white) / self.px_per_meter * boundary_gain
-                error_m -= repulsion
-        else:
-            error_m = float('nan')
+        error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
         out      = Float32()
         out.data = float(error_m)
