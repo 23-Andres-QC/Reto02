@@ -49,6 +49,7 @@ class LaneController(Node):
 
         self.error      = None
         self.last_error = 0.0
+        self.last_w     = 0.0   # último ω publicado en modo normal
         self.integral   = 0.0
         self.last_stamp = self.get_clock().now()
         self.last_rx    = self.get_clock().now()
@@ -79,20 +80,17 @@ class LaneController(Node):
 
         age = (now - self.last_rx).nanoseconds * 1e-9
 
-        # Línea perdida → modo recuperación: girar hacia el último lado conocido
+        # Línea perdida → modo recuperación: continuar girando en el mismo sentido
         if self.error is None or age > self.timeout:
             self.integral = 0.0
-            if self.last_error != 0.0:
-                # -sign(last_error) porque error>0 → línea a la derecha → girar derecha → ω<0
-                direction = -math.copysign(1.0, self.last_error)
-                cmd = Twist()
-                cmd.linear.x  = self.recovery_v
-                cmd.angular.z = direction * self.recovery_w
-                self.pub.publish(cmd)
-                self.get_logger().info(
-                    f'[RECOVERY] línea perdida, girando {"derecha" if direction < 0 else "izquierda"}')
+            cmd = Twist()
+            cmd.linear.x  = self.recovery_v
+            # Usa el último ω publicado; si nunca hubo movimiento, gira derecha por defecto
+            if self.last_w != 0.0:
+                cmd.angular.z = math.copysign(self.recovery_w, self.last_w)
             else:
-                self.pub.publish(Twist())
+                cmd.angular.z = -self.recovery_w  # default: derecha
+            self.pub.publish(cmd)
             return
 
         e = self.error
@@ -119,6 +117,7 @@ class LaneController(Node):
         self.pub.publish(cmd)
 
         self.last_error = e
+        self.last_w     = w
 
 
 def main(args=None):
