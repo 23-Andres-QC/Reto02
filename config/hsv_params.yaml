@@ -33,5 +33,5 @@ lane_detector:
     min_area: 150
     lane_width_m: 0.21
     px_per_meter: 600.0
-    look_ahead_row: 0.78
+    look_ahead_row: 0.88
     publish_debug: true
