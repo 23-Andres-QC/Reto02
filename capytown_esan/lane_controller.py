@@ -62,6 +62,8 @@ class LaneController(Node):
         self.last_w       = 0.0
         self.integral     = 0.0
         self.initialized  = False
+        self.start_time   = None   # momento de primera detección
+        self.start_delay  = 5.0    # segundos de espera antes de avanzar
         self.last_stamp   = self.get_clock().now()
         self.last_rx      = self.get_clock().now()
         self.error_history = deque(maxlen=hist)
@@ -79,9 +81,12 @@ class LaneController(Node):
 
     def on_error(self, msg):
         if not math.isnan(msg.data):
-            self.error       = msg.data
-            self.last_rx     = self.get_clock().now()
-            self.initialized = True
+            self.error   = msg.data
+            self.last_rx = self.get_clock().now()
+            if not self.initialized:
+                self.initialized = True
+                self.start_time  = self.get_clock().now()
+                self.get_logger().info('Línea detectada — esperando 5 s antes de avanzar...')
 
     def _trend(self):
         """Pendiente media del historial de errores (m por muestra)."""
@@ -101,8 +106,12 @@ class LaneController(Node):
 
         age = (now - self.last_rx).nanoseconds * 1e-9
 
-        # Esperar primera detección
+        # Esperar primera detección y luego 5 segundos antes de moverse
         if not self.initialized:
+            self.pub.publish(Twist())
+            return
+        elapsed = (now - self.start_time).nanoseconds * 1e-9
+        if elapsed < self.start_delay:
             self.pub.publish(Twist())
             return
 

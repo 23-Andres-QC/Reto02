@@ -11,6 +11,7 @@ Convención de signo:
   error < 0  →  centro a la IZQUIERDA →  girar izquierda (ω > 0)
 """
 
+import math
 import cv2
 import numpy as np
 
@@ -133,16 +134,6 @@ class LaneDetector(Node):
         mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_OPEN,  kernel)
         mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_CLOSE, kernel)
 
-        # Dividir imagen: izquierda solo amarillo, derecha solo blanco
-        half = w // 2
-        left_mask  = np.zeros((h, w), dtype=np.uint8)
-        left_mask[:, :half] = 255
-        right_mask = np.zeros((h, w), dtype=np.uint8)
-        right_mask[:, half:] = 255
-
-        mask_yellow    = cv2.bitwise_and(mask_yellow,    left_mask)
-        mask_white_raw = cv2.bitwise_and(mask_white_raw, right_mask)
-
         # Excluir píxeles amarillos del blanco
         mask_white_raw = cv2.bitwise_and(mask_white_raw, cv2.bitwise_not(mask_yellow))
 
@@ -162,15 +153,23 @@ class LaneDetector(Node):
                 x_white = None  # blanco fuera del umbral de 22cm → ignorar
 
         if x_yellow is not None and x_white is not None:
-            center_px = (x_yellow + x_white) / 2.0
+            center_px = (x_yellow + x_white) / 2.0        # centro exacto entre las dos
         elif x_yellow is not None:
-            center_px = x_yellow + lane_width_px / 2.0
-        elif x_white is not None:
-            center_px = x_white - lane_width_px / 2.0
+            center_px = x_yellow + lane_width_px / 2.0    # centro del carril: 11cm a la derecha del amarillo
         else:
-            center_px = None
+            center_px = None  # sin amarillo → recovery
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
+
+        # Corrección suave de proximidad al amarillo:
+        # Si el amarillo pasa del 38% de la imagen (se acerca al centro),
+        # añade un empuje suave a la derecha proporcional a la intrusión.
+        # Gain bajo (1.2) para que la corrección sea gradual y no oscile.
+        if x_yellow is not None and not math.isnan(error_m):
+            yellow_warn_px = w * 0.38
+            if x_yellow > yellow_warn_px:
+                proximity = (x_yellow - yellow_warn_px) / self.px_per_meter * 1.2
+                error_m += proximity
 
         out      = Float32()
         out.data = float(error_m)
