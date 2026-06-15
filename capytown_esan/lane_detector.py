@@ -35,8 +35,8 @@ class LaneDetector(Node):
             ('white_a_max',      155),
             ('white_b_min',      100),
             ('white_b_max',      155),
-            ('white_min_aspect', 1.8),   # altura/ancho mínimo para forma de línea
-            ('white_max_area',   8000),  # rechazar manchas grandes (reflejos)
+            ('white_min_aspect', 2.5),   # altura/ancho mínimo para forma de línea
+            ('white_max_area',   2500),  # rechazar manchas grandes (reflejos)
             # Amarillo - HSV
             ('yellow_h_min', 15),
             ('yellow_h_max', 40),
@@ -145,30 +145,34 @@ class LaneDetector(Node):
         x_yellow = self._centroid_x(mask_yellow[band, :])
         x_white  = self._centroid_x(mask_white[band, :])
 
-        # Validar distancia entre líneas: solo aceptar blanco dentro del umbral de carril
         lane_width_px = self.lane_width_m * self.px_per_meter
+
+        # Rechazar blanco que esté a la izquierda del amarillo (imposible físicamente)
+        # o que esté fuera del rango 60-130% del ancho de carril esperado
         if x_yellow is not None and x_white is not None:
             dist_px = x_white - x_yellow
-            if dist_px < lane_width_px * 0.6 or dist_px > lane_width_px * 1.3:
-                x_white = None  # blanco fuera del umbral de 22cm → ignorar
+            if dist_px <= 0 or dist_px < lane_width_px * 0.6 or dist_px > lane_width_px * 1.3:
+                x_white = None
 
+        # Centro del carril
         if x_yellow is not None and x_white is not None:
-            center_px = (x_yellow + x_white) / 2.0        # centro exacto entre las dos
+            center_px = (x_yellow + x_white) / 2.0
         elif x_yellow is not None:
-            center_px = x_yellow + lane_width_px / 2.0    # centro del carril: 11cm a la derecha del amarillo
+            # Solo amarillo: asumimos que el blanco está 11cm a la derecha
+            center_px = x_yellow + lane_width_px / 2.0
         else:
-            center_px = None  # sin amarillo → recovery
+            center_px = None  # sin amarillo → publicar NaN
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
-        # Corrección suave de proximidad al amarillo:
-        # Si el amarillo pasa del 38% de la imagen (se acerca al centro),
-        # añade un empuje suave a la derecha proporcional a la intrusión.
-        # Gain bajo (1.2) para que la corrección sea gradual y no oscile.
+        # Si el blanco detectado empujaría el error más allá del umbral del carril
+        # (center_px lejos del expected) ya fue descartado arriba.
+        # Aquí: corrección suave si el amarillo se acerca al centro (robot derivando izquierda)
         if x_yellow is not None and not math.isnan(error_m):
-            yellow_warn_px = w * 0.38
+            yellow_warn_px = w * 0.38   # 38% desde la izquierda
             if x_yellow > yellow_warn_px:
-                proximity = (x_yellow - yellow_warn_px) / self.px_per_meter * 1.2
+                # Empuje suave a la derecha proporcional a la intrusión
+                proximity = (x_yellow - yellow_warn_px) / self.px_per_meter * 0.8
                 error_m += proximity
 
         out      = Float32()

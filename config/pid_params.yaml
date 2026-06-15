@@ -1,20 +1,25 @@
 lane_controller:
   ros__parameters:
 
-    # PID — sintonizar en este orden: primero kp, luego kd, al final ki
-    kp: 4.0          # proporcional (oscila si es muy alto)
-    ki: 0.3          # integral (corrige sesgo persistente)
-    kd: 0.4          # derivativo (amortigua oscilaciones)
-    kff: 1.0         # feed-forward de tendencia (anticipa giros)
+    # PID — solo activo en modo AVANCE
+    kp: 4.0
+    ki: 0.3
+    kd: 0.4
+    kff: 1.0
 
-    # Velocidad de crucero — subir progresivamente: 0.10 → 0.15 → 0.20
-    linear_speed: 0.14   # m/s  (reducido 30% para calibración)
+    # Velocidad de avance (10% se reduce internamente)
+    linear_speed: 0.14   # m/s
 
-    max_angular: 2.0     # rad/s — saturación de omega
-    integral_limit: 0.5  # anti-windup: límite acumulador integral
-    error_timeout: 0.8   # s — sin /lane_error → modo recuperación
-    control_rate: 30.0   # Hz del lazo de control
-    recovery_w: 1.05     # rad/s = 60 deg/s girando al buscar la línea perdida
-    recovery_v: 0.05     # m/s avance lento mientras busca la línea
-    history_size: 10     # muestras para calcular tendencia de giro (~0.33s)
-    turn_threshold: 0.3   # |ω| rad/s mínimo para activar FF (giro diferencial real)
+    max_angular: 2.0
+    integral_limit: 0.5
+    error_timeout: 0.8
+    control_rate: 30.0
+
+    # Calibración
+    calib_w: 0.30          # rad/s — velocidad angular suave de búsqueda/centrado
+    error_tolerance: 0.03  # m — error máximo para considerar "centrado"
+    stable_frames: 6       # frames consecutivos de amarillo antes de avanzar
+
+    history_size: 10
+    turn_threshold: 0.3
+    start_delay: 5.0
