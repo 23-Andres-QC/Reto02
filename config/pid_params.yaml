@@ -16,7 +16,7 @@ lane_controller:
     control_rate: 30.0
 
     # Calibración
-    calib_w: 0.30          # rad/s — velocidad angular suave de búsqueda/centrado
+    calib_w: 0.33          # rad/s — velocidad angular suave de búsqueda/centrado
     error_tolerance: 0.03  # m — error máximo para considerar "centrado"
     stable_frames: 6       # frames consecutivos de amarillo antes de avanzar
 

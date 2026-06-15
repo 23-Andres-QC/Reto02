@@ -12,8 +12,8 @@ lane_detector:
     white_a_max: 170
     white_b_min: 85
     white_b_max: 170
-    white_min_aspect: 2.5   # altura/ancho mínimo — solo líneas verticales estrechas
-    white_max_area: 2500    # rechaza manchas grandes (reflejos, baldosas, etc)
+    white_min_aspect: 2.0   # altura/ancho mínimo — solo líneas verticales estrechas
+    white_max_area: 4000    # rechaza manchas grandes (reflejos, baldosas, etc)
 
     # ---------------------------------------------------------------
     # Amarillo - HSV - borde IZQUIERDO del carril
