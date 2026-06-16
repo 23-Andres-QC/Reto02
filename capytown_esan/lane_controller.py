@@ -36,7 +36,7 @@ class LaneController(Node):
             ('ki',              0.3),
             ('kd',              0.4),
             ('kff',             1.0),
-            ('linear_speed',    0.155),  # +10% sobre 0.14
+            ('linear_speed',    0.21),   # +50% sobre 0.14
             ('max_angular',     2.0),
             ('calib_w',         0.36),   # +10% sobre 0.33 rad/s
             ('error_tolerance', 0.03),
@@ -174,25 +174,7 @@ class LaneController(Node):
         e = self.error
         self.error_history.append(e)
 
-        centrado = abs(e) < self.error_tolerance
-        estable  = self.yellow_streak >= self.stable_frames
-
-        # ── CALIB_CENTRA o ESPERA_ESTABLE ────────────────────────────
-        if not centrado or not estable:
-            w_target = -(self.kp / 4.0) * e
-            w_target = max(-self.calib_w, min(self.calib_w, w_target))
-            cmd.linear.x  = 0.0
-            cmd.angular.z = self._smooth(w_target, alpha=0.20)
-            self.pub.publish(cmd)
-            corner = self._track_corner(cmd.angular.z, dt)
-            if corner:
-                self.yellow_streak = 0
-                self.get_logger().info('[ESQUINA] >90° acumulados — re-calibrando')
-            self.last_w     = cmd.angular.z
-            self.last_error = e
-            return
-
-        # ── AVANCE: centrado + estable ────────────────────────────────
+        # ── AVANCE: amarillo visible → siempre avanza, PID corrige ──────
         P = self.kp * e
         self.integral += e * dt
         self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
@@ -203,14 +185,14 @@ class LaneController(Node):
         w_pid = -(P + I + D + FF)
         w_pid = max(-self.max_w, min(self.max_w, w_pid))
 
-        cmd.linear.x  = self.v * 0.9   # 10% reducido para suavidad
+        cmd.linear.x  = self.v
         cmd.angular.z = self._smooth(w_pid, alpha=0.30)
         self.pub.publish(cmd)
 
         corner = self._track_corner(cmd.angular.z, dt)
         if corner:
             self.yellow_streak = 0
-            self.get_logger().info('[ESQUINA] >90° en avance — re-calibrando')
+            self.get_logger().info('[ESQUINA] >90° detectados')
 
         self.last_error = e
         self.last_w     = cmd.angular.z

@@ -8,7 +8,7 @@ lane_controller:
     kff: 1.0
 
     # Velocidad de avance (10% se reduce internamente)
-    linear_speed: 0.155  # m/s  (+10%)
+    linear_speed: 0.21   # m/s  (+50% sobre 0.14)
 
     max_angular: 2.0
     integral_limit: 0.5
