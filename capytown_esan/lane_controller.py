@@ -188,7 +188,7 @@ class LaneController(Node):
             self.integral = 0.0
             self.error_history.clear()
             cmd.angular.z = self._smooth(+self.drift_w, alpha=0.12)   # siempre izquierda
-            cmd.linear.x  = 0.0 if self.in_corner else self.v * 0.4   # avanza lento en recta
+            cmd.linear.x  = self.v * 0.4                               # siempre avanza
             self.pub.publish(cmd)
             self._track_corner(cmd.angular.z, dt)
             self.last_w = cmd.angular.z
