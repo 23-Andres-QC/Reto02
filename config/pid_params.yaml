@@ -1,25 +1,23 @@
 lane_controller:
   ros__parameters:
 
-    # PID — solo activo en modo AVANCE
     kp: 4.0
     ki: 0.3
     kd: 0.4
     kff: 1.0
 
-    # Velocidad de avance (10% se reduce internamente)
-    linear_speed: 0.21   # m/s  (+50% sobre 0.14)
+    linear_speed: 0.21   # m/s
 
     max_angular: 2.0
     integral_limit: 0.5
     error_timeout: 0.8
     control_rate: 30.0
 
-    # Calibración
-    calib_w: 0.36          # rad/s — velocidad angular suave de búsqueda/centrado
-    error_tolerance: 0.03  # m — error máximo para considerar "centrado"
-    stable_frames: 6       # frames consecutivos de amarillo antes de avanzar
+    calib_w: 0.36        # rad/s — búsqueda en curva (para + gira)
+    drift_w: 0.10        # rad/s — micro-corrección en recta sin amarillo
+    drift_trend: 0.004   # umbral de tendencia para corrección anticipada
 
-    history_size: 10
+    history_size: 15
     turn_threshold: 0.3
     start_delay: 5.0
+    imu_topic: /imu
