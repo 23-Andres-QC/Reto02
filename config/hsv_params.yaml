@@ -8,8 +8,8 @@ lane_detector:
     white_a_max: 170
     white_b_min: 85
     white_b_max: 170
-    white_min_aspect: 1.5
-    white_max_area: 6000
+    white_min_aspect: 1.8
+    white_max_area: 4500
 
     # Amarillo - HSV
     yellow_h_min: 15

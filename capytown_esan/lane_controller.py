@@ -126,10 +126,10 @@ class LaneController(Node):
 
     # ------------------------------------------------------------------
     def _trend(self):
-        n = len(self.error_history)
+        lst = [x for x in self.error_history if x is not None]
+        n = len(lst)
         if n < 4:
             return 0.0
-        lst = list(self.error_history)
         return (lst[-1] - lst[0]) / n
 
     def _smooth(self, target, alpha=0.25):

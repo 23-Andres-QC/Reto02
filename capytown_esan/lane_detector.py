@@ -35,8 +35,8 @@ class LaneDetector(Node):
             ('white_a_max',      155),
             ('white_b_min',      100),
             ('white_b_max',      155),
-            ('white_min_aspect', 1.5),   # altura/ancho mínimo para forma de línea
-            ('white_max_area',   6000),  # rechazar manchas grandes (reflejos)
+            ('white_min_aspect', 1.8),   # altura/ancho mínimo para forma de línea
+            ('white_max_area',   4500),  # rechazar manchas grandes (reflejos)
             # Amarillo - HSV
             ('yellow_h_min', 15),
             ('yellow_h_max', 40),
