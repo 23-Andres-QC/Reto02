@@ -154,30 +154,21 @@ class LaneDetector(Node):
             if dist_px <= 0 or dist_px < lane_width_px * 0.6 or dist_px > lane_width_px * 1.3:
                 x_white = None
 
-        # Centro del carril
-        yellow_warn_px = w * 0.38   # límite: amarillo no debe pasar el 38% de la imagen
-
+        # Centro del carril — siempre 11cm a la derecha del amarillo
         if x_yellow is not None and x_white is not None:
-            # Ambas líneas: error exacto entre ellas
             center_px = (x_yellow + x_white) / 2.0
-            error_m   = (center_px - w / 2.0) / self.px_per_meter
         elif x_yellow is not None:
-            # Solo amarillo: no calibrar por distancia asumida.
-            # Ir recto (error=0) a menos que el amarillo invada la zona de proximidad.
-            if x_yellow > yellow_warn_px:
-                # Amarillo demasiado cerca del centro → empuje suave a la derecha
-                error_m = (x_yellow - yellow_warn_px) / self.px_per_meter * 0.8
-            else:
-                error_m = 0.0   # amarillo bien a la izquierda → sigue recto
+            center_px = x_yellow + lane_width_px / 2.0   # 11cm a la derecha del amarillo
         else:
-            error_m = float('nan')   # sin amarillo → calibración por búsqueda
+            center_px = None   # sin amarillo → NaN
+
+        error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
         out      = Float32()
         out.data = float(error_m)
         self.pub_err.publish(out)
 
         if self.publish_debug:
-            center_px = (w / 2.0 + error_m * self.px_per_meter) if not math.isnan(error_m) else None
             self._publish_debug(warp, mask_white, mask_yellow, row,
                                 x_white, x_yellow, center_px, msg)
 
