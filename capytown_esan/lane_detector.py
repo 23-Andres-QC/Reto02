@@ -99,9 +99,9 @@ class LaneDetector(Node):
         if self._servo_sent:
             return
         msg = Int32()
-        msg.data = -65
+        msg.data = -45
         self.pub_servo.publish(msg)
-        self.get_logger().info('Servo s2 → -65°')
+        self.get_logger().info('Servo s2 → -45°')
         self._servo_sent = True
         self._servo_timer.cancel()
 
@@ -179,6 +179,14 @@ class LaneDetector(Node):
             center_px = None   # sin amarillo → NaN
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
+
+        # Corrección de proximidad: si el amarillo se acerca demasiado al centro
+        # (robot derivando hacia la izquierda), empuje fuerte a la derecha
+        if x_yellow is not None and not math.isnan(error_m):
+            yellow_warn_px = w * 0.32   # 32% — umbral más ajustado
+            if x_yellow > yellow_warn_px:
+                intrusion = (x_yellow - yellow_warn_px) / self.px_per_meter
+                error_m  += intrusion * 2.0   # ganancia alta para forzar corrección derecha
 
         out      = Float32()
         out.data = float(error_m)
