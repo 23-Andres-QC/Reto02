@@ -183,22 +183,12 @@ class LaneController(Node):
         age = (now - self.last_rx).nanoseconds * 1e-9
         cmd = Twist()
 
-        # ── SIN AMARILLO: busca según última dirección conocida ──────
+        # ── SIN AMARILLO: gira izquierda suave mientras avanza ───────
         if age > self.timeout:
             self.integral = 0.0
             self.error_history.clear()
-            # Si el último error era negativo (robot iba hacia amarillo / demasiado izquierda)
-            # → busca a la DERECHA para alejarse del amarillo
-            # Si el último error era positivo (robot se alejó del amarillo)
-            # → busca a la IZQUIERDA para volver a encontrarlo
-            if self.last_error < -0.01:
-                w_search = -self.drift_w   # gira derecha — estaba sobre el amarillo
-            else:
-                w_search = +self.drift_w   # gira izquierda — se alejó del amarillo
-            yaw_corr      = self._yaw_correction()
-            w_search      = max(-self.calib_w, min(self.calib_w, w_search + yaw_corr * 0.3))
-            cmd.angular.z = self._smooth(w_search, alpha=0.12)
-            cmd.linear.x  = 0.0 if self.in_corner else self.v * 0.4
+            cmd.angular.z = self._smooth(+self.drift_w, alpha=0.12)   # siempre izquierda
+            cmd.linear.x  = 0.0 if self.in_corner else self.v * 0.4   # avanza lento en recta
             self.pub.publish(cmd)
             self._track_corner(cmd.angular.z, dt)
             self.last_w = cmd.angular.z
