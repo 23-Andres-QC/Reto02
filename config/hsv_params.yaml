@@ -1,23 +1,17 @@
 lane_detector:
   ros__parameters:
 
-    # ---------------------------------------------------------------
-    # Blanco - LAB (más robusto que HSV para blancos con reflejos)
-    # L = luminosidad (0-255), A y B son canales de color (128 = neutro)
-    # Blanco: L alto, A y B cerca de 128
-    # ---------------------------------------------------------------
+    # Blanco - LAB
     white_l_min: 80
     white_l_max: 255
     white_a_min: 85
     white_a_max: 170
     white_b_min: 85
     white_b_max: 170
-    white_min_aspect: 1.5   # altura/ancho mínimo — solo líneas verticales estrechas
-    white_max_area: 6000    # rechaza manchas grandes (reflejos, baldosas, etc)
+    white_min_aspect: 1.5
+    white_max_area: 6000
 
-    # ---------------------------------------------------------------
-    # Amarillo - HSV - borde IZQUIERDO del carril
-    # ---------------------------------------------------
+    # Amarillo - HSV
     yellow_h_min: 15
     yellow_h_max: 40
     yellow_s_min: 60
@@ -25,11 +19,9 @@ lane_detector:
     yellow_v_min: 80
     yellow_v_max: 255
 
-    # ---------------------------------------------------------------
     # Geometría / IPM
-    # ---------------------------------------------------------------
     min_area: 150
-    lane_width_m: 0.22
+    lane_width_m: 0.21
     px_per_meter: 600.0
     look_ahead_row: 0.88
     publish_debug: true

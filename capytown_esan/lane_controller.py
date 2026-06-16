@@ -7,6 +7,10 @@ Estados:
   CALIB_CENTRA: amarillo visible pero error grande → corrección suave sin avanzar
   AVANCE      : centrado y amarillo estable → avanza + corrección suave
 
+Detección de esquina: si el ángulo girado acumulado en una misma dirección
+supera 90° (π/2 rad), se considera que se completó una curva y se resetea
+el contador de estabilidad para re-calibrar antes de volver a avanzar.
+
 Convención:  error > 0 → robot desplazado a la derecha → ω < 0 (girar derecha)
              error < 0 → robot desplazado a la izquierda → ω > 0 (girar izquierda)
 """
@@ -19,6 +23,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
 
+CORNER_THRESHOLD = math.pi / 2.0   # 90 grados en radianes
+
 
 class LaneController(Node):
 
@@ -26,21 +32,17 @@ class LaneController(Node):
         super().__init__('lane_controller')
 
         self.declare_parameters('', [
-            # PID — solo activo en modo AVANCE
             ('kp',              4.0),
             ('ki',              0.3),
             ('kd',              0.4),
             ('kff',             1.0),
-            # Velocidades
-            ('linear_speed',    0.14),   # m/s en modo AVANCE
+            ('linear_speed',    0.155),  # +10% sobre 0.14
             ('max_angular',     2.0),
-            # Calibración
-            ('calib_w',         0.30),   # rad/s — corrección suave en calibración
-            ('error_tolerance', 0.03),   # m — umbral para considerar "centrado"
-            ('stable_frames',   6),      # frames consecutivos con amarillo antes de avanzar
-            # Control
+            ('calib_w',         0.36),   # +10% sobre 0.33 rad/s
+            ('error_tolerance', 0.03),
+            ('stable_frames',   6),
             ('integral_limit',  0.5),
-            ('error_timeout',   0.8),    # s — tiempo sin amarillo → modo búsqueda
+            ('error_timeout',   0.8),
             ('control_rate',    30.0),
             ('turn_threshold',  0.3),
             ('history_size',    10),
@@ -74,28 +76,32 @@ class LaneController(Node):
         self.last_stamp    = self.get_clock().now()
         self.last_rx       = self.get_clock().now()
         self.error_history = deque(maxlen=hist)
-        self.yellow_streak = 0   # frames consecutivos con amarillo válido
+        self.yellow_streak = 0
+
+        # Acumulador de ángulo para detección de esquina
+        self.cum_angle      = 0.0   # rad girados en la dirección actual
+        self.last_turn_sign = 0     # +1 izq, -1 der, 0 recto
 
         self.sub   = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
         self.pub   = self.create_publisher(Twist, '/cmd_vel', 10)
         self.timer = self.create_timer(1.0 / rate, self.control_loop)
 
         self.get_logger().info(
-            f'lane_controller listo — v={self.v} calib_w={self.calib_w} '
-            f'tol={self.error_tolerance}m estable={self.stable_frames}f')
+            f'lane_controller — v={self.v:.3f} calib_w={self.calib_w:.2f} '
+            f'tol={self.error_tolerance}m stable={self.stable_frames}f')
 
     # ------------------------------------------------------------------
     def on_error(self, msg):
         if not math.isnan(msg.data):
-            self.error       = msg.data
-            self.last_rx     = self.get_clock().now()
+            self.error         = msg.data
+            self.last_rx       = self.get_clock().now()
             self.yellow_streak += 1
             if not self.initialized:
                 self.initialized = True
                 self.start_time  = self.get_clock().now()
                 self.get_logger().info(f'Amarillo detectado — esperando {self.start_delay:.0f}s...')
         else:
-            self.yellow_streak = 0   # perdió amarillo, reinicia contador
+            self.yellow_streak = 0
 
     # ------------------------------------------------------------------
     def _trend(self):
@@ -105,11 +111,33 @@ class LaneController(Node):
         lst = list(self.error_history)
         return (lst[-1] - lst[0]) / n
 
-    # ------------------------------------------------------------------
     def _smooth(self, target, alpha=0.25):
-        """Suavizado exponencial — alpha bajo = cambio muy lento."""
         self.smooth_w = (1.0 - alpha) * self.smooth_w + alpha * target
         return self.smooth_w
+
+    def _track_corner(self, w, dt):
+        """Acumula ángulo girado en la misma dirección.
+        Si cambia de dirección, resetea. Si supera 90°, detecta esquina."""
+        if abs(w) < 0.05:
+            # Casi recto: resetea acumulador
+            self.cum_angle      = 0.0
+            self.last_turn_sign = 0
+            return False
+
+        sign = 1 if w > 0 else -1
+        if sign != self.last_turn_sign:
+            # Cambió de dirección: resetea
+            self.cum_angle      = 0.0
+            self.last_turn_sign = sign
+
+        self.cum_angle += abs(w) * dt
+
+        if self.cum_angle >= CORNER_THRESHOLD:
+            self.cum_angle      = 0.0
+            self.last_turn_sign = 0
+            return True   # esquina completada
+
+        return False
 
     # ------------------------------------------------------------------
     def control_loop(self):
@@ -135,12 +163,11 @@ class LaneController(Node):
         if age > self.timeout:
             self.integral = 0.0
             self.error_history.clear()
-            # Giro suave izquierda — el amarillo está a la izquierda
-            w_target = +self.calib_w
+            w_target = +self.calib_w   # gira izquierda suave — amarillo está a la izquierda
             cmd.linear.x  = 0.0
             cmd.angular.z = self._smooth(w_target, alpha=0.15)
             self.pub.publish(cmd)
-            self.get_logger().debug('[BUSCA] Sin amarillo — giro suave izquierda')
+            self._track_corner(cmd.angular.z, dt)
             self.last_w = cmd.angular.z
             return
 
@@ -150,34 +177,22 @@ class LaneController(Node):
         centrado = abs(e) < self.error_tolerance
         estable  = self.yellow_streak >= self.stable_frames
 
-        # ── CALIB_CENTRA: amarillo visible pero fuera de tolerancia ───
-        if not centrado:
-            # Corrección proporcional suave, sin avanzar
-            # Ganancia reducida (kp/4) para que sea lenta y progresiva
-            w_target = -(self.kp / 4.0) * e
-            w_target = max(-self.calib_w, min(self.calib_w, w_target))  # limitar a calib_w
-            cmd.linear.x  = 0.0
-            cmd.angular.z = self._smooth(w_target, alpha=0.20)
-            self.pub.publish(cmd)
-            self.last_w    = cmd.angular.z
-            self.last_error = e
-            self.get_logger().debug(f'[CENTRA] e={e:.3f}m w={cmd.angular.z:.2f}')
-            return
-
-        # ── AVANCE: centrado + amarillo estable ───────────────────────
-        if not estable:
-            # Centrado pero aún esperando frames consecutivos (esquinas)
+        # ── CALIB_CENTRA o ESPERA_ESTABLE ────────────────────────────
+        if not centrado or not estable:
             w_target = -(self.kp / 4.0) * e
             w_target = max(-self.calib_w, min(self.calib_w, w_target))
             cmd.linear.x  = 0.0
             cmd.angular.z = self._smooth(w_target, alpha=0.20)
             self.pub.publish(cmd)
+            corner = self._track_corner(cmd.angular.z, dt)
+            if corner:
+                self.yellow_streak = 0
+                self.get_logger().info('[ESQUINA] >90° acumulados — re-calibrando')
             self.last_w     = cmd.angular.z
             self.last_error = e
-            self.get_logger().debug(f'[ESPERA_ESTABLE] streak={self.yellow_streak}/{self.stable_frames}')
             return
 
-        # PID completo solo en modo avance
+        # ── AVANCE: centrado + estable ────────────────────────────────
         P = self.kp * e
         self.integral += e * dt
         self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
@@ -188,10 +203,14 @@ class LaneController(Node):
         w_pid = -(P + I + D + FF)
         w_pid = max(-self.max_w, min(self.max_w, w_pid))
 
-        # Velocidad 10% reducida para correcciones más suaves mientras avanza
-        cmd.linear.x  = self.v * 0.9
+        cmd.linear.x  = self.v * 0.9   # 10% reducido para suavidad
         cmd.angular.z = self._smooth(w_pid, alpha=0.30)
         self.pub.publish(cmd)
+
+        corner = self._track_corner(cmd.angular.z, dt)
+        if corner:
+            self.yellow_streak = 0
+            self.get_logger().info('[ESQUINA] >90° en avance — re-calibrando')
 
         self.last_error = e
         self.last_w     = cmd.angular.z
