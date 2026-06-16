@@ -13,8 +13,8 @@ lane_controller:
     error_timeout: 0.8
     control_rate: 30.0
 
-    calib_w: 0.36        # rad/s — búsqueda en curva (para + gira)
-    drift_w: 0.10        # rad/s — micro-corrección en recta sin amarillo
+    calib_w: 0.20        # rad/s — límite máximo angular en búsqueda
+    drift_w: 0.15        # rad/s — giro suave buscando amarillo
     drift_trend: 0.004   # umbral de tendencia para corrección anticipada
 
     history_size: 15

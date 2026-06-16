@@ -45,8 +45,8 @@ class LaneController(Node):
             ('kff',             1.0),
             ('linear_speed',    0.21),
             ('max_angular',     2.0),
-            ('calib_w',         0.36),
-            ('drift_w',         0.10),   # rad/s máximo en micro-corrección de deriva
+            ('calib_w',         0.20),
+            ('drift_w',         0.15),   # rad/s giro suave buscando amarillo
             ('drift_trend',     0.004),  # umbral de tendencia para activar DERIVA
             ('integral_limit',  0.5),
             ('error_timeout',   0.8),
@@ -183,29 +183,19 @@ class LaneController(Node):
         age = (now - self.last_rx).nanoseconds * 1e-9
         cmd = Twist()
 
-        # ── BUSCA: amarillo perdido Y en/post-curva → para + gira izq ─
-        if age > self.timeout and self.in_corner:
+        # ── SIN AMARILLO: gira izquierda suave buscándolo ────────────
+        if age > self.timeout:
             self.integral = 0.0
             self.error_history.clear()
-            cmd.linear.x  = 0.0
-            cmd.angular.z = self._smooth(+self.calib_w, alpha=0.15)
-            self.pub.publish(cmd)
-            self._track_corner(cmd.angular.z, dt)
-            self.last_w = cmd.angular.z
-            return
-
-        # ── DERIVA: amarillo perdido en RECTA → micro-corrección sin frenar ──
-        if age > self.timeout and not self.in_corner:
-            # En recta: mantén velocidad, micro-giro izquierda + yaw reference
             yaw_corr = self._yaw_correction()
-            w_drift  = +self.drift_w + yaw_corr
-            w_drift  = max(-self.calib_w, min(self.calib_w, w_drift))
-            cmd.linear.x  = self.v * 0.6   # reduce velocidad pero NO frena
-            cmd.angular.z = self._smooth(w_drift, alpha=0.15)
+            w_search = self.drift_w + yaw_corr                         # giro izquierda suave
+            w_search = max(-self.drift_w * 1.5, min(self.drift_w * 1.5, w_search))
+            cmd.angular.z = self._smooth(w_search, alpha=0.12)         # transición muy lenta
+            # En curva para, en recta avanza despacio
+            cmd.linear.x  = 0.0 if self.in_corner else self.v * 0.4
             self.pub.publish(cmd)
             self._track_corner(cmd.angular.z, dt)
             self.last_w = cmd.angular.z
-            self.get_logger().debug('[DERIVA] sin amarillo en recta — micro-corrección')
             return
 
         e = self.error
