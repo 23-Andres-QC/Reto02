@@ -18,7 +18,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32
 from cv_bridge import CvBridge
 
 
@@ -83,11 +83,27 @@ class LaneDetector(Node):
             Image, '/image_raw', self.on_image, 10)
         self.pub_err = self.create_publisher(Float32, '/lane_error', 10)
         self.pub_dbg = self.create_publisher(Image, '/lane/debug_image', 10)
+        self.pub_servo = self.create_publisher(Int32, '/servo_s2', 10)
+
+        # Posición inicial de cámara — publica una vez tras 0.5s
+        self._servo_sent = False
+        self._servo_timer = self.create_timer(0.5, self._init_servo)
 
         self.get_logger().info('lane_detector listo.')
         self.get_logger().info(
             f'yellow HSV [{self.yellow_lo}] - [{self.yellow_hi}]  '
             f'white LAB [{self.white_lo_lab}] - [{self.white_hi_lab}]')
+
+    # ------------------------------------------------------------------
+    def _init_servo(self):
+        if self._servo_sent:
+            return
+        msg = Int32()
+        msg.data = -65
+        self.pub_servo.publish(msg)
+        self.get_logger().info('Servo s2 → -65°')
+        self._servo_sent = True
+        self._servo_timer.cancel()
 
     # ------------------------------------------------------------------
     def build_ipm(self, w, h):
