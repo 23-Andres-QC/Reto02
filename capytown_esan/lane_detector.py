@@ -243,10 +243,16 @@ class LaneDetector(Node):
         # se está angulando hacia el amarillo o el blanco, esa tendencia indica
         # que va a salirse aunque todavía no esté dentro del margen estático —
         # se corrige antes, no cuando ya esté encima de la línea.
+        # NOTA: ganancias bajadas (antes 1.8/1.2) — se detectó que en curvas
+        # este empujón se sumaba al PID normal + FF de anticipación y
+        # componía una corrección demasiado fuerte, causando que el error
+        # rebotara de un extremo a otro en vez de asentarse suave.
         if center_px is not None:
-            safety_margin_px = lane_width_px * 0.30   # base, antes 25%
+            safety_margin_px = lane_width_px * 0.30
             angle_px = 0.0 if math.isnan(slope_m) else slope_m * self.px_per_meter
-            look_ahead_gain = 1.2   # cuánto agranda el margen por ángulo de acercamiento
+            look_ahead_gain = 0.7   # antes 1.2 — agranda menos el margen por ángulo
+            boost_gain = 1.2        # antes 1.8 — empujón más suave
+            max_error_m = 0.20      # tope: evita que el error se dispare sin límite
 
             if x_yellow is not None:
                 dist_to_yellow_px = (w / 2.0) - x_yellow   # > margen = seguro
@@ -256,7 +262,7 @@ class LaneDetector(Node):
                 margin_yellow = safety_margin_px + approaching_yellow * look_ahead_gain
                 if dist_to_yellow_px < margin_yellow:
                     intrusion = (margin_yellow - dist_to_yellow_px) / self.px_per_meter
-                    error_m += intrusion * 1.8   # refuerza giro a la derecha
+                    error_m += intrusion * boost_gain
 
             if x_white is not None:
                 dist_to_white_px = x_white - (w / 2.0)     # > margen = seguro
@@ -264,7 +270,9 @@ class LaneDetector(Node):
                 margin_white = safety_margin_px + approaching_white * look_ahead_gain
                 if dist_to_white_px < margin_white:
                     intrusion = (margin_white - dist_to_white_px) / self.px_per_meter
-                    error_m -= intrusion * 1.8   # refuerza giro a la izquierda
+                    error_m -= intrusion * boost_gain
+
+            error_m = max(-max_error_m, min(max_error_m, error_m))
 
         # Log de diagnóstico: posición robot, posición amarillo, separación real vs la mitad
         # del carril esperada (target_cm, derivado de lane_width_m — nunca un número fijo).

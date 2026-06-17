@@ -29,14 +29,18 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
   realmente llegue, así que usarlo anticipaba el giro demasiado pronto. Se usa en la calibración
   inicial para exigir que el robot arranque realmente derecho, no solo centrado
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
-- **Zona de seguridad ANTICIPADA** (margen base 30% del carril ≈6.6cm desde cada línea, empujón ×1.8):
-  si el robot se acerca demasiado a la amarilla o a la blanca, refuerza el error para alejarlo
-  antes de cruzarla. El margen no es fijo: se AGRANDA según el ángulo actual (`slope_m`, centro
-  vs inferior) — si la línea guía muestra que el carro se está angulando hacia una de las dos
-  líneas, eso ya indica que va a salirse aunque todavía no esté dentro del margen estático, así
-  que corrige antes (anticipado por ángulo), no solo cuando ya está encima de la línea (reactivo
-  por posición). Sigue siendo un empujón discreto, no una ganancia continua duplicada con el PID
-  (eso causó zigzag en una versión anterior, ver Reglas de oro #6)
+- **Zona de seguridad ANTICIPADA** (margen base 30% del carril ≈6.6cm desde cada línea, empujón ×1.2,
+  agrandado por ángulo con ganancia 0.7, tope de error ±0.20m): si el robot se acerca demasiado a
+  la amarilla o a la blanca, refuerza el error para alejarlo antes de cruzarla. El margen no es
+  fijo: se AGRANDA según el ángulo actual (`slope_m`, centro vs inferior) — si la línea guía
+  muestra que el carro se está angulando hacia una de las dos líneas, eso ya indica que va a
+  salirse aunque todavía no esté dentro del margen estático, así que corrige antes (anticipado
+  por ángulo), no solo cuando ya está encima de la línea (reactivo por posición). Las ganancias
+  se bajaron (antes ×1.8/1.2) y se agregó el tope de error porque en curvas este empujón se
+  sumaba al PID + FF y componía una corrección demasiado fuerte (el error rebotaba de un extremo
+  a otro, ej. -25cm a +5cm, en vez de asentarse suave). Sigue siendo un empujón discreto, no una
+  ganancia continua duplicada con el PID (eso causó zigzag en una versión anterior, ver Reglas de
+  oro #6)
 - Debug (`/lane/debug_image`): overlay translúcido sobre la cámara real (bird's-eye), no fondo negro;
   **3 líneas verdes** = las 3 bandas de medición; **línea magenta** = recorrido planeado (3 puntos)
 

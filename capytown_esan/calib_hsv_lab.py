@@ -227,24 +227,29 @@ class CalibHsvLab(Node):
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
         # Zona de seguridad ANTICIPADA: el margen se agranda según el ángulo
-        # (slope_m) — igual que lane_detector.py.
+        # (slope_m) — igual que lane_detector.py. Ganancias bajadas (antes
+        # 1.8/1.2) y tope de error — evita componer demasiado con PID+FF.
         if center_px is not None:
             safety_margin_px = lane_width_px * 0.30
             angle_px = 0.0 if math.isnan(slope_m) else slope_m * self.px_per_meter
-            look_ahead_gain = 1.2
+            look_ahead_gain = 0.7
+            boost_gain = 1.2
+            max_error_m = 0.20
 
             if x_yellow is not None:
                 dist_to_yellow_px = (w / 2.0) - x_yellow
                 approaching_yellow = max(0.0, -angle_px)
                 margin_yellow = safety_margin_px + approaching_yellow * look_ahead_gain
                 if dist_to_yellow_px < margin_yellow:
-                    error_m += (margin_yellow - dist_to_yellow_px) / self.px_per_meter * 1.8
+                    error_m += (margin_yellow - dist_to_yellow_px) / self.px_per_meter * boost_gain
             if x_white is not None:
                 dist_to_white_px = x_white - (w / 2.0)
                 approaching_white = max(0.0, angle_px)
                 margin_white = safety_margin_px + approaching_white * look_ahead_gain
                 if dist_to_white_px < margin_white:
-                    error_m -= (margin_white - dist_to_white_px) / self.px_per_meter * 1.8
+                    error_m -= (margin_white - dist_to_white_px) / self.px_per_meter * boost_gain
+
+            error_m = max(-max_error_m, min(max_error_m, error_m))
 
         out = Float32()
         out.data = float(error_m)
