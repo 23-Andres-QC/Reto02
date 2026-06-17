@@ -80,6 +80,9 @@ class LaneController(Node):
             ('calib_min_w',     0.12),   # rad/s — piso mínimo para superar zona muerta del motor
             ('curve_speed_factor', 0.6), # reduce velocidad lineal 40% siempre
             ('slope_curve_threshold', 0.04),  # m — pendiente mínima para anticipar curva (predictivo)
+            ('sharp_turn_slope_threshold', 0.09),  # m — pendiente que indica esquina ~90° real
+            ('sharp_turn_w',          0.40),   # rad/s — giro lento dedicado en la esquina
+            ('sharp_turn_speed_factor', 0.3),  # avance muy reducido mientras gira en la esquina
         ])
 
         gp = self.get_parameter
@@ -108,6 +111,9 @@ class LaneController(Node):
         self.calib_min_w          = float(gp('calib_min_w').value)
         self.curve_speed_factor   = float(gp('curve_speed_factor').value)
         self.slope_curve_threshold = float(gp('slope_curve_threshold').value)
+        self.sharp_turn_slope_threshold = float(gp('sharp_turn_slope_threshold').value)
+        self.sharp_turn_w               = float(gp('sharp_turn_w').value)
+        self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
 
         self.error         = None
         self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
@@ -130,10 +136,13 @@ class LaneController(Node):
         self.pos_x0 = None   # origen registrado al iniciar
         self.pos_y0 = None
 
-        # Acumulador esquina
+        # Acumulador esquina (informativo, no cambia la ley de control)
         self.cum_angle      = 0.0
         self.last_turn_sign = 0
         self.in_corner      = False
+
+        # Esquina ~90° real: giro lento dedicado hasta reencontrar línea recta
+        self.in_sharp_turn = False
 
         # Calibración inicial: bias de error capturado al terminar start_delay.
         self.calib_bias = None
@@ -344,9 +353,27 @@ class LaneController(Node):
         if abs(e) < 0.01:
             e = 0.0
 
-        if not stale:
-            self.error_history.append(e)
-        trend = self._trend()
+        # ── ESQUINA ~90° (track con curvas de 90°, no continuas) ────────
+        # Si la pendiente crece mucho (la línea se va casi de canto), no es
+        # una curva suave a corregir con FF — es una esquina real. Entra en
+        # un giro lento y dedicado en la dirección de la pendiente, y se
+        # mantiene girando hasta volver a ver la línea recta y centrada
+        # (la "siguiente" línea amarilla/blanca tras la esquina) — ahí frena
+        # el giro y vuelve al PID normal.
+        if abs(self.slope) > self.sharp_turn_slope_threshold:
+            self.in_sharp_turn = True
+
+        if self.in_sharp_turn:
+            turn_dir = math.copysign(1.0, self.slope) if self.slope != 0.0 else 1.0
+            w_target = -turn_dir * self.sharp_turn_w   # mismo signo que la corrección normal
+            cmd.angular.z = self._smooth(w_target, alpha=0.10)
+            cmd.linear.x  = self.v * self.sharp_turn_speed_factor
+            self.pub.publish(cmd)
+            self._track_corner(cmd.angular.z, dt)
+            # Salir del giro: línea ya recta (slope bajo) y centrada (e bajo)
+            if abs(self.slope) < self.slope_curve_threshold and abs(e) < self.calib_tolerance:
+                self.in_sharp_turn = False
+            return
 
         # ── AVANCE con PID — una sola ley de control, sin saltos de modo ──
         P = self.kp * e
@@ -358,11 +385,13 @@ class LaneController(Node):
 
         # Anticipación de curva: el punto de la banda SUPERIOR (más lejos) se
         # desvía del inferior antes de que el robot mismo tenga que girar
-        # fuerte — eso es la pendiente (slope) de la línea guía. Detectar la
-        # curva por slope es predictivo (la cámara ve la curva venir); usar
-        # |last_w| sería reactivo (recién detecta cuando ya está girando).
+        # fuerte — eso es la pendiente (slope) de la línea guía, una lectura
+        # del frame actual, sin retraso. Usar `trend` aquí sería tardío: se
+        # calcula acumulando varias muestras de error en el tiempo (~0.5s de
+        # ventana), así que la corrección llegaba tarde aunque la detección
+        # de curva ya fuera inmediata. Por eso el FF usa slope directamente.
         anticipa_curva = abs(self.slope) > self.slope_curve_threshold
-        FF = self.kff * trend if anticipa_curva else 0.0
+        FF = self.kff * self.slope if anticipa_curva else 0.0
 
         # Corrección complementaria de bajo peso hacia la línea recta planeada
         # en la calibración inicial (initial_yaw). NO es una línea rígida: solo

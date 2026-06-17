@@ -234,6 +234,27 @@ class LaneDetector(Node):
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
+        # Zona de seguridad: si el robot se acerca demasiado a CUALQUIERA de
+        # las dos líneas (amarilla o blanca) — riesgo real de salirse del
+        # carril — refuerza el error para alejarlo antes de cruzarla. Es un
+        # empujón discreto, solo dentro del margen de seguridad (25% del
+        # carril ≈5.5cm desde cada línea), no una ganancia duplicada de
+        # forma continua (eso ya causó zigzag antes — ver LOGICA_CIRCUITO.md).
+        if center_px is not None:
+            safety_margin_px = lane_width_px * 0.25
+
+            if x_yellow is not None:
+                dist_to_yellow_px = (w / 2.0) - x_yellow   # > margen = seguro
+                if dist_to_yellow_px < safety_margin_px:
+                    intrusion = (safety_margin_px - dist_to_yellow_px) / self.px_per_meter
+                    error_m += intrusion * 1.5   # refuerza giro a la derecha
+
+            if x_white is not None:
+                dist_to_white_px = x_white - (w / 2.0)     # > margen = seguro
+                if dist_to_white_px < safety_margin_px:
+                    intrusion = (safety_margin_px - dist_to_white_px) / self.px_per_meter
+                    error_m -= intrusion * 1.5   # refuerza giro a la izquierda
+
         # Log de diagnóstico: posición robot, posición amarillo, separación real vs la mitad
         # del carril esperada (target_cm, derivado de lane_width_m — nunca un número fijo).
         # error_sep_cm = separacion_cm - target_cm → 0 = separación correcta

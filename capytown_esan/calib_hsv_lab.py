@@ -223,6 +223,19 @@ class CalibHsvLab(Node):
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
+        # Zona de seguridad: refuerza el error si se acerca demasiado a cualquiera
+        # de las dos líneas — igual que lane_detector.py.
+        if center_px is not None:
+            safety_margin_px = lane_width_px * 0.25
+            if x_yellow is not None:
+                dist_to_yellow_px = (w / 2.0) - x_yellow
+                if dist_to_yellow_px < safety_margin_px:
+                    error_m += (safety_margin_px - dist_to_yellow_px) / self.px_per_meter * 1.5
+            if x_white is not None:
+                dist_to_white_px = x_white - (w / 2.0)
+                if dist_to_white_px < safety_margin_px:
+                    error_m -= (safety_margin_px - dist_to_white_px) / self.px_per_meter * 1.5
+
         out = Float32()
         out.data = float(error_m)
         self.pub_err.publish(out)

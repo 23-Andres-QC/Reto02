@@ -25,6 +25,10 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
   guía (0 = recta/vertical, distinto de 0 = el robot está angulado respecto a la pista). Se usa
   en la calibración inicial para exigir que el robot arranque realmente derecho, no solo centrado
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
+- **Zona de seguridad** (25% del carril ≈5.5cm desde cada línea): si el robot se acerca demasiado
+  a la amarilla o a la blanca, refuerza el error (empujón ×1.5) para alejarlo antes de cruzarla.
+  Es un empujón discreto solo dentro del margen — NO una ganancia continua duplicada con el PID
+  (eso causó zigzag en una versión anterior, ver Reglas de oro #6)
 - Debug (`/lane/debug_image`): overlay translúcido sobre la cámara real (bird's-eye), no fondo negro;
   **3 líneas verdes** = las 3 bandas de medición; **línea magenta** = recorrido planeado (3 puntos)
 
@@ -65,6 +69,27 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
 3. AVANCE: termina la espera → PID normal.
 ```
 
+## Esquina ~90° (track de curvas reales, no continuas)
+
+La pista tiene esquinas de ~90°, no curvas suaves continuas. Si la pendiente crece
+mucho (la línea se va casi de canto), no es algo para corregir con FF — es una
+esquina real. Se activa un modo dedicado, ANTES de la ley PID normal:
+
+```
+Si |slope| > sharp_turn_slope_threshold (9cm)  → entra en in_sharp_turn = True
+
+Mientras in_sharp_turn:
+  dirección = signo de slope (mismo signo que la corrección normal)
+  angular.z = giro lento dedicado (sharp_turn_w = 0.40 rad/s), suavizado (alpha=0.10)
+  linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
+  Sale del giro (in_sharp_turn = False) cuando:
+    |slope| < slope_curve_threshold (4cm)  Y  |e| < calib_tolerance (2.5cm)
+    → la línea ya está recta y centrada otra vez (la "siguiente" línea tras la esquina)
+```
+
+Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID normal
+(la ley PID de avance no se ejecuta esos frames).
+
 ## Control en avance — una sola ley PID
 
 ```
@@ -76,7 +101,9 @@ anticipa_curva = |slope| > slope_curve_threshold (4cm)
     no el giro que el robot ya está haciendo. La cámara ve la curva venir
     (el punto de arriba se desvía) antes de que el robot tenga que girar fuerte.
 
-FF = kff*tendencia            → solo si anticipa_curva
+FF = kff*slope                → solo si anticipa_curva (slope = lectura del frame
+                                 actual, sin retraso; "tendencia" del error tardaba
+                                 ~0.5s en acumularse y llegaba tarde a la curva)
 yaw_term = yaw_correction * yaw_weight(0.3)  → solo si NO anticipa_curva
 ω = -(P+I+D+FF) + yaw_term, limitado a max_angular, suavizado (alpha=0.12)
 v = linear_speed * curve_speed_factor (0.30 × 0.6 = 0.18 m/s) — SIEMPRE, no solo en curvas
@@ -145,9 +172,14 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
 3. Pérdida breve → usar última lectura congelada, no cambiar de modo
 4. Centro objetivo: **C=(Y+W)/2** si hay ambos colores, si no, **amarillo + 11cm** — nunca el centro de la imagen
 5. Una sola ley de control PID — no ramas con ganancias distintas según error/tendencia
-6. No duplicar corrección de proximidad al amarillo — el error geométrico ya la incluye
+6. No agregar una ganancia de proximidad CONTINUA (causó zigzag) — la única excepción permitida
+   es la zona de seguridad discreta (solo dentro de 25% del carril desde cada línea), que existe
+   específicamente para no salirse del carril, no para "ayudar" al centrado general
 7. `self.error` nunca se pisa con `None` en NaN — solo `age` decide el estado
 8. Al arrancar, calibrar activamente (ángulo) antes de la espera — nunca asumir que ya está bien puesto
 9. El yaw planeado es un empujón suave, no una línea rígida — se apaga en curvas reales
 10. `lane_width_m` debe ser **0.22** (22cm reales) para que la mitad sea exactamente 11cm — si se
     cambia, el log de separación se recalcula solo (usa `target_cm` derivado, no un número fijo)
+11. La pista tiene esquinas ~90° reales, no curvas suaves continuas — por eso existen dos umbrales
+    de `slope` distintos: uno para anticipar (FF, suave) y otro mayor para esquina real (giro
+    lento dedicado, `in_sharp_turn`) — no confundirlos ni unificarlos en uno solo

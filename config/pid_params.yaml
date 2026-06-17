@@ -31,3 +31,7 @@ lane_controller:
     calib_min_w: 0.12             # rad/s — piso mínimo para superar zona muerta del motor
     curve_speed_factor: 0.6       # reduce velocidad lineal 40% SIEMPRE (no solo en curvas)
     slope_curve_threshold: 0.04   # m — pendiente mínima para anticipar curva (predictivo, vía cámara)
+
+    sharp_turn_slope_threshold: 0.09  # m — pendiente que indica esquina ~90° real (no curva suave)
+    sharp_turn_w: 0.40                # rad/s — giro lento dedicado en la esquina
+    sharp_turn_speed_factor: 0.3      # avance muy reducido mientras gira en la esquina
