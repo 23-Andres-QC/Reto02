@@ -204,12 +204,12 @@ class CalibHsvLab(Node):
         band_points    = [band_center(sl) for sl in band_slices]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Centro vs inferior (no superior vs inferior) — igual que lane_detector.py,
-        # para no anticipar la curva demasiado pronto con el punto lejano.
-        x_mid = band_points[1][2]
-        x_bot = band_points[2][2]
-        if x_mid is not None and x_bot is not None:
-            slope_m = (x_mid - x_bot) / self.px_per_meter
+        # Amarillo, banda central vs inferior (no centro combinado, no
+        # superior-inferior) — igual que lane_detector.py.
+        x_yel_mid = band_points[1][0]
+        x_yel_bot = band_points[2][0]
+        if x_yel_mid is not None and x_yel_bot is not None:
+            slope_m = (x_yel_mid - x_yel_bot) / self.px_per_meter
         else:
             slope_m = float('nan')
 
@@ -226,18 +226,25 @@ class CalibHsvLab(Node):
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
-        # Zona de seguridad: refuerza el error si se acerca demasiado a cualquiera
-        # de las dos líneas — igual que lane_detector.py.
+        # Zona de seguridad ANTICIPADA: el margen se agranda según el ángulo
+        # (slope_m) — igual que lane_detector.py.
         if center_px is not None:
-            safety_margin_px = lane_width_px * 0.25
+            safety_margin_px = lane_width_px * 0.30
+            angle_px = 0.0 if math.isnan(slope_m) else slope_m * self.px_per_meter
+            look_ahead_gain = 1.2
+
             if x_yellow is not None:
                 dist_to_yellow_px = (w / 2.0) - x_yellow
-                if dist_to_yellow_px < safety_margin_px:
-                    error_m += (safety_margin_px - dist_to_yellow_px) / self.px_per_meter * 1.5
+                approaching_yellow = max(0.0, -angle_px)
+                margin_yellow = safety_margin_px + approaching_yellow * look_ahead_gain
+                if dist_to_yellow_px < margin_yellow:
+                    error_m += (margin_yellow - dist_to_yellow_px) / self.px_per_meter * 1.8
             if x_white is not None:
                 dist_to_white_px = x_white - (w / 2.0)
-                if dist_to_white_px < safety_margin_px:
-                    error_m -= (safety_margin_px - dist_to_white_px) / self.px_per_meter * 1.5
+                approaching_white = max(0.0, angle_px)
+                margin_white = safety_margin_px + approaching_white * look_ahead_gain
+                if dist_to_white_px < margin_white:
+                    error_m -= (margin_white - dist_to_white_px) / self.px_per_meter * 1.8
 
         out = Float32()
         out.data = float(error_m)

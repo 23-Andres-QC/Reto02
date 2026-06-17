@@ -210,8 +210,8 @@ class LaneController(Node):
                 self.get_logger().info('Amarillo detectado — calibrando posición inicial...')
 
     def on_slope(self, msg):
-        # Pendiente de la línea guía (top vs bottom). Si llega NaN (línea
-        # insuficiente para trazarla) se mantiene el último valor conocido.
+        # Pendiente del amarillo (banda central vs inferior). Si llega NaN
+        # (línea insuficiente para trazarla) se mantiene el último valor conocido.
         if not math.isnan(msg.data):
             self.slope = msg.data
 

@@ -208,15 +208,16 @@ class LaneDetector(Node):
         band_points    = [_band_center(sl) for sl in band_slices]  # [(xy,xw,xc), ...]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Pendiente de la línea guía: CENTRO vs INFERIOR (no superior vs inferior).
-        # El punto superior (banda lejana) ve la curva mucho antes de que el
-        # robot realmente llegue ahí — usarlo anticipaba demasiado pronto el
-        # giro. Centro-inferior es un tramo más cercano al robot, así la
-        # anticipación/esquina se dispara cuando la curva está realmente cerca.
-        x_mid = band_points[1][2]   # banda central
-        x_bot = band_points[2][2]   # banda inferior
-        if x_mid is not None and x_bot is not None:
-            slope_m = (x_mid - x_bot) / self.px_per_meter
+        # Pendiente para los GIROS: usa solo el AMARILLO (banda central vs
+        # inferior), no el centro combinado — el amarillo es la línea más
+        # confiable y continua en toda la pista (el blanco puede faltar o
+        # invalidarse en curvas). Centro-inferior (no superior-inferior):
+        # el punto superior (banda lejana) ve la curva mucho antes de que
+        # el robot realmente llegue ahí — anticipaba demasiado pronto el giro.
+        x_yel_mid = band_points[1][0]   # amarillo, banda central
+        x_yel_bot = band_points[2][0]   # amarillo, banda inferior
+        if x_yel_mid is not None and x_yel_bot is not None:
+            slope_m = (x_yel_mid - x_yel_bot) / self.px_per_meter
         else:
             slope_m = float('nan')
 
@@ -236,26 +237,34 @@ class LaneDetector(Node):
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
-        # Zona de seguridad: si el robot se acerca demasiado a CUALQUIERA de
-        # las dos líneas (amarilla o blanca) — riesgo real de salirse del
-        # carril — refuerza el error para alejarlo antes de cruzarla. Es un
-        # empujón discreto, solo dentro del margen de seguridad (25% del
-        # carril ≈5.5cm desde cada línea), no una ganancia duplicada de
-        # forma continua (eso ya causó zigzag antes — ver LOGICA_CIRCUITO.md).
+        # Zona de seguridad ANTICIPADA: no solo reacciona cuando ya está cerca
+        # de una línea — el margen de alerta se AGRANDA según el ángulo actual
+        # (slope_m, centro vs inferior). Si la línea guía muestra que el carro
+        # se está angulando hacia el amarillo o el blanco, esa tendencia indica
+        # que va a salirse aunque todavía no esté dentro del margen estático —
+        # se corrige antes, no cuando ya esté encima de la línea.
         if center_px is not None:
-            safety_margin_px = lane_width_px * 0.25
+            safety_margin_px = lane_width_px * 0.30   # base, antes 25%
+            angle_px = 0.0 if math.isnan(slope_m) else slope_m * self.px_per_meter
+            look_ahead_gain = 1.2   # cuánto agranda el margen por ángulo de acercamiento
 
             if x_yellow is not None:
                 dist_to_yellow_px = (w / 2.0) - x_yellow   # > margen = seguro
-                if dist_to_yellow_px < safety_margin_px:
-                    intrusion = (safety_margin_px - dist_to_yellow_px) / self.px_per_meter
-                    error_m += intrusion * 1.5   # refuerza giro a la derecha
+                # angle_px < 0 → x_mid < x_bot → el carril se cierra hacia la izquierda
+                # (se acerca al amarillo) → agranda el margen de alerta de ese lado
+                approaching_yellow = max(0.0, -angle_px)
+                margin_yellow = safety_margin_px + approaching_yellow * look_ahead_gain
+                if dist_to_yellow_px < margin_yellow:
+                    intrusion = (margin_yellow - dist_to_yellow_px) / self.px_per_meter
+                    error_m += intrusion * 1.8   # refuerza giro a la derecha
 
             if x_white is not None:
                 dist_to_white_px = x_white - (w / 2.0)     # > margen = seguro
-                if dist_to_white_px < safety_margin_px:
-                    intrusion = (safety_margin_px - dist_to_white_px) / self.px_per_meter
-                    error_m -= intrusion * 1.5   # refuerza giro a la izquierda
+                approaching_white = max(0.0, angle_px)
+                margin_white = safety_margin_px + approaching_white * look_ahead_gain
+                if dist_to_white_px < margin_white:
+                    intrusion = (margin_white - dist_to_white_px) / self.px_per_meter
+                    error_m -= intrusion * 1.8   # refuerza giro a la izquierda
 
         # Log de diagnóstico: posición robot, posición amarillo, separación real vs la mitad
         # del carril esperada (target_cm, derivado de lane_width_m — nunca un número fijo).

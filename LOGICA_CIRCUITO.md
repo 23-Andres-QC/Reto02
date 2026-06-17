@@ -21,15 +21,21 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que el robot intenta
   minimizar de error para avanzar recto — no es una línea fija, se vuelve a trazar constantemente
   según dónde esté el amarillo
-- También se publica `/lane_slope`: la pendiente entre el punto **central** e **inferior** de esa
-  línea guía (0 = recta/vertical, distinto de 0 = el robot está angulado respecto a la pista).
-  Se usa centro-inferior y NO superior-inferior — el punto superior (banda lejana) ve la curva
-  mucho antes de que el robot realmente llegue, así que usarlo anticipaba el giro demasiado pronto.
-  Se usa en la calibración inicial para exigir que el robot arranque realmente derecho, no solo centrado
+- También se publica `/lane_slope`: la pendiente del **AMARILLO** (no el centro combinado) entre
+  su punto **central** e **inferior** (0 = recta/vertical, distinto de 0 = el robot está angulado
+  respecto a la pista). Los giros usan amarillo como referencia porque es la línea más confiable y
+  continua en toda la pista (el blanco puede faltar o invalidarse en curvas). Se usa centro-inferior
+  y NO superior-inferior — el punto superior (banda lejana) ve la curva mucho antes de que el robot
+  realmente llegue, así que usarlo anticipaba el giro demasiado pronto. Se usa en la calibración
+  inicial para exigir que el robot arranque realmente derecho, no solo centrado
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
-- **Zona de seguridad** (25% del carril ≈5.5cm desde cada línea): si el robot se acerca demasiado
-  a la amarilla o a la blanca, refuerza el error (empujón ×1.5) para alejarlo antes de cruzarla.
-  Es un empujón discreto solo dentro del margen — NO una ganancia continua duplicada con el PID
+- **Zona de seguridad ANTICIPADA** (margen base 30% del carril ≈6.6cm desde cada línea, empujón ×1.8):
+  si el robot se acerca demasiado a la amarilla o a la blanca, refuerza el error para alejarlo
+  antes de cruzarla. El margen no es fijo: se AGRANDA según el ángulo actual (`slope_m`, centro
+  vs inferior) — si la línea guía muestra que el carro se está angulando hacia una de las dos
+  líneas, eso ya indica que va a salirse aunque todavía no esté dentro del margen estático, así
+  que corrige antes (anticipado por ángulo), no solo cuando ya está encima de la línea (reactivo
+  por posición). Sigue siendo un empujón discreto, no una ganancia continua duplicada con el PID
   (eso causó zigzag en una versión anterior, ver Reglas de oro #6)
 - Debug (`/lane/debug_image`): overlay translúcido sobre la cámara real (bird's-eye), no fondo negro;
   **3 líneas verdes** = las 3 bandas de medición; **línea magenta** = recorrido planeado (3 puntos)
@@ -47,7 +53,7 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
 1. CALIBRACIÓN ACTIVA (no avanza, solo ajusta ángulo):
    se activa al ver amarillo por primera vez.
    e     = error promedio (centrado lateral)
-   slope = pendiente de la línea guía (top vs bottom, /lane_slope) — 0 = recta,
+   slope = pendiente del amarillo (banda central vs inferior, /lane_slope) — 0 = recta,
            distinto de 0 = el robot está angulado respecto a la pista aunque
            el centrado promedio ya esté bien
    w = -(calib_kp * e + calib_kp_slope * slope)
