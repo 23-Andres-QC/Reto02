@@ -26,3 +26,4 @@ lane_detector:
     lane_width_m: 0.22
     px_per_meter: 600.0
     publish_debug: true
+    white_bias_m: 0.02   # m — desplaza el centro objetivo 2cm hacia el amarillo (se apegaba mucho al blanco)

@@ -58,6 +58,7 @@ class LaneDetector(Node):
             ('lane_width_m',    0.22),
             ('px_per_meter',    600.0),
             ('publish_debug',   True),
+            ('white_bias_m',    0.02),  # m — desplaza el centro objetivo hacia el amarillo (se apegaba al blanco)
         ])
 
         gp = self.get_parameter
@@ -85,6 +86,7 @@ class LaneDetector(Node):
         self.lane_width_m   = float(gp('lane_width_m').value)
         self.px_per_meter   = float(gp('px_per_meter').value)
         self.publish_debug  = bool(gp('publish_debug').value)
+        self.white_bias_m   = float(gp('white_bias_m').value)
 
         self.M         = None
         self.warp_size = None
@@ -189,12 +191,16 @@ class LaneDetector(Node):
         ]
 
         lane_width_px = self.lane_width_m * self.px_per_meter
+        white_bias_px = self.white_bias_m * self.px_per_meter
 
         def _band_center(sl):
             """Centro del carril en una banda: C=(Y+W)/2 si hay ambos colores
             y la distancia es razonable; si solo hay uno de los dos, ese
             color + 11cm (amarillo) o - 11cm (blanco) hacia el otro lado.
-            El carrito puede avanzar con CUALQUIERA de los dos colores."""
+            El carrito puede avanzar con CUALQUIERA de los dos colores.
+            Cuando el blanco participa del cálculo, el objetivo se desplaza
+            white_bias_px hacia el amarillo — el robot se apegaba demasiado
+            al blanco con el punto medio exacto."""
             xy = self._centroid_x(mask_yellow[sl, :])
             xw = self._centroid_x(mask_white[sl, :])
             if xy is not None and xw is not None:
@@ -202,11 +208,11 @@ class LaneDetector(Node):
                 if dist <= 0 or dist < lane_width_px * 0.6 or dist > lane_width_px * 1.3:
                     xw = None   # blanco fuera de rango esperado → descartar
             if xy is not None and xw is not None:
-                return xy, xw, (xy + xw) / 2.0
+                return xy, xw, (xy + xw) / 2.0 - white_bias_px
             elif xy is not None:
                 return xy, None, xy + lane_width_px / 2.0
             elif xw is not None:
-                return None, xw, xw - lane_width_px / 2.0
+                return None, xw, xw - lane_width_px / 2.0 - white_bias_px
             return None, None, None
 
         band_points    = [_band_center(sl) for sl in band_slices]  # [(xy,xw,xc), ...]

@@ -48,6 +48,7 @@ class CalibHsvLab(Node):
             ('yellow_min_elong', 8.0), ('yellow_min_area', 500), ('yellow_max_area', 20000),
             ('lane_width_m', 0.22),
             ('px_per_meter', 600.0),
+            ('white_bias_m', 0.02),
             ('imu_topic', '/imu'),
             ('odom_topic', '/odom_raw'),
         ])
@@ -71,6 +72,7 @@ class CalibHsvLab(Node):
 
         self.lane_width_m = float(gp('lane_width_m').value)
         self.px_per_meter = float(gp('px_per_meter').value)
+        self.white_bias_m = float(gp('white_bias_m').value)
 
         self.M, self.warp_size = None, None
         self.x_yellow_f = None
@@ -187,6 +189,7 @@ class CalibHsvLab(Node):
         band_rows   = [h // 6, h // 2, (5 * h) // 6]
         band_slices = [slice(0, h // 3), slice(h // 3, (2 * h) // 3), slice((2 * h) // 3, h)]
         lane_width_px = self.lane_width_m * self.px_per_meter
+        white_bias_px = self.white_bias_m * self.px_per_meter
 
         def band_center(sl):
             xy = self._centroid_x(mask_yellow[sl, :])
@@ -196,11 +199,11 @@ class CalibHsvLab(Node):
                 if dist <= 0 or dist < lane_width_px * 0.6 or dist > lane_width_px * 1.3:
                     xw = None
             if xy is not None and xw is not None:
-                return xy, xw, (xy + xw) / 2.0
+                return xy, xw, (xy + xw) / 2.0 - white_bias_px
             elif xy is not None:
                 return xy, None, xy + lane_width_px / 2.0
             elif xw is not None:
-                return None, xw, xw - lane_width_px / 2.0
+                return None, xw, xw - lane_width_px / 2.0 - white_bias_px
             return None, None, None
 
         band_points    = [band_center(sl) for sl in band_slices]

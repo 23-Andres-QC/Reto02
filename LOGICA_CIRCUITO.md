@@ -8,10 +8,13 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 
 - **Amarillo y Blanco, ambos en HSV** (antes el blanco era LAB; se cambió porque el blanco real
   tiene baja saturación y alto brillo, más simple y consistente detectarlo así junto al amarillo)
-- Centro del carril por banda: **C=(Y+W)/2** si se detectan ambos colores y la distancia entre
-  ellos es razonable (60%-130% del ancho esperado); si solo hay uno de los dos, ese color ±11cm
-  hacia el otro lado (amarillo+11cm o blanco-11cm) — mitad de 22cm de carril. El carrito puede
-  avanzar con CUALQUIERA de los dos colores, no solo amarillo
+- Centro del carril por banda: **C=(Y+W)/2 − white_bias** si se detectan ambos colores y la
+  distancia entre ellos es razonable (60%-130% del ancho esperado); si solo hay uno de los dos,
+  ese color ±11cm hacia el otro lado (amarillo+11cm o blanco-11cm − white_bias) — mitad de 22cm
+  de carril. El carrito puede avanzar con CUALQUIERA de los dos colores, no solo amarillo.
+  `white_bias_m` (2cm) desplaza el objetivo hacia el amarillo siempre que el blanco participa
+  del cálculo (combinado o solo-blanco) — el robot se apegaba demasiado al blanco con el punto
+  medio exacto; no se aplica al fallback solo-amarillo (ahí el blanco no participa)
 - Filtro de forma: **elongación por PCA** sobre componentes conectados (`_component_filter`),
   aplicado a ambos colores — más robusto que un bounding-box para distinguir cintas largas de
   manchas/reflejos redondeados. Reemplazó el filtro anterior (área + aspecto de bounding-box)
@@ -204,9 +207,10 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
 2. En cuanto vuelve a detectar cualquiera de los dos colores, retoma el PID normal de inmediato
 3. Mientras SÍ detecta color, la corrección siempre es gradual avanzando — nunca "frenar para
    corregir" (eso es distinto de frenar por falta total de color, regla #1)
-4. Centro objetivo: **C=(Y+W)/2** si hay ambos colores; si solo uno, ese color ±11cm hacia el
-   otro lado (amarillo+11cm o blanco-11cm) — nunca el centro de la imagen. El error de control
-   usa SOLO la banda inferior (la posición actual real), no un promedio de las 3 bandas
+4. Centro objetivo: **C=(Y+W)/2 − white_bias (2cm)** si hay ambos colores; si solo uno, ese
+   color ±11cm hacia el otro lado (amarillo+11cm o blanco-11cm − white_bias) — nunca el centro
+   de la imagen. El error de control usa SOLO la banda inferior (la posición actual real), no
+   un promedio de las 3 bandas
 5. Una sola ley de control PID — no ramas con ganancias distintas según error/tendencia
 6. No agregar una ganancia de proximidad CONTINUA (causó zigzag) — la única excepción permitida
    es la zona de seguridad discreta (solo dentro de 25% del carril desde cada línea), que existe
