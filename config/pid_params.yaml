@@ -16,15 +16,14 @@ lane_controller:
     start_delay: 5.0      # s — al detectar color por primera vez, espera quieto antes de avanzar (sin calibración activa)
     imu_topic: /imu
     odom_topic: /odom_raw
-    yaw_weight: 0.3   # peso del rumbo planeado (yaw inicial) durante avance normal
 
     calib_tolerance: 0.025      # m — error/pendiente máximos para considerar "centrado" (uso: salida de esquina)
     curve_speed_factor: 0.6       # reduce velocidad lineal 40% SIEMPRE (no solo en curvas)
     slope_curve_threshold: 0.04   # m — pendiente mínima para anticipar curva (predictivo, vía cámara)
 
     sharp_turn_slope_threshold: 0.13  # m — pendiente que indica esquina ~90° real (antes 0.09, se disparaba 7-10cm antes de tiempo)
-    sharp_turn_w: 0.40                # rad/s — giro base dedicado en la esquina
+    sharp_turn_kp_slope: 3.0          # ganancia del giro sobre la pendiente ACTUAL del amarillo (antes tasa fija sharp_turn_w=0.40 — "preprogramada")
     sharp_turn_kp_e: 2.5              # ganancia sobre el error lateral — cierra el giro hacia el centro
-    sharp_turn_max_w: 0.80            # rad/s — tope del giro (base + corrección)
+    sharp_turn_max_w: 0.80            # rad/s — tope del giro (pendiente + corrección)
     sharp_turn_speed_factor: 0.3      # avance muy reducido mientras gira en la esquina
     max_anticipation_time: 0.8        # s — tope de tiempo anticipando antes de forzar el giro cerrado

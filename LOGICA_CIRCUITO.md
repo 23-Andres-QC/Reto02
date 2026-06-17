@@ -66,8 +66,9 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
 
 2. AVANCE: termina la espera (start_delay) → PID normal directo, usando
    la posición real en la que esté el robot (no hay bias de calibración
-   que restar). initial_yaw (IMU) y pos_x0,y0 (odom) se capturan en este
-   momento, ni bien termina la espera.
+   que restar). pos_x0,y0 (odom) se capturan en este momento, ni bien
+   termina la espera. La IMU (yaw) solo se usa para el log de posición,
+   NO en la ley de control (ver "Sin término de rumbo fijo" más abajo).
 ```
 
 ## Esquina ~90° (track de curvas reales, no continuas)
@@ -88,21 +89,21 @@ Dos formas de entrar en in_sharp_turn = True:
      Este tope de tiempo limita esa ventana.)
 
 Mientras in_sharp_turn:
-  dirección = signo de slope (mismo signo que la corrección normal)
-  w = -(sharp_turn_w * dirección + sharp_turn_kp_e * e), limitado a ±sharp_turn_max_w
+  w = -(sharp_turn_kp_slope * slope + sharp_turn_kp_e * e), limitado a ±sharp_turn_max_w
   angular.z = suavizado (alpha=0.10)
   linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
   Sale del giro (in_sharp_turn = False) cuando:
     |slope| < slope_curve_threshold (4cm)  Y  |e| < calib_tolerance (2.5cm)
     → la línea ya está recta y centrada otra vez (la "siguiente" línea tras la esquina)
 
-El giro NO es a un ritmo fijo: se suma una corrección proporcional al error
-lateral ACTUAL (sharp_turn_kp_e * e). Antes, una velocidad angular fija
-generaba un giro de radio constante ("abierto") que no necesariamente
-converge al centro real — si el robot llegaba a la esquina ya desviado, el
-giro fijo no compensaba eso y se acababa saliendo de la línea amarilla en
-vez de seguirla. Con la corrección proporcional, si llega desviado, el giro
-se cierra más para converger hacia el centro de las líneas proyectadas.
+El giro NO es a una tasa fija/preprogramada (`sharp_turn_w` constante, versión
+anterior): eso generaba un giro de radio constante ("abierto") que no
+necesariamente converge al centro real, y además no reflejaba lo que la
+cámara realmente estaba viendo en cada instante. Ahora el giro se deriva
+directamente de `sharp_turn_kp_slope * slope` — proporcional a la pendiente
+ACTUAL del amarillo: si la línea está muy de canto gira fuerte, si ya casi
+se enderezó gira poco. Se suma `sharp_turn_kp_e * e` para converger al
+centro si el robot llegó desviado a la esquina.
 ```
 
 Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID normal
@@ -122,17 +123,21 @@ anticipa_curva = |slope| > slope_curve_threshold (4cm)
 FF = kff*slope                → solo si anticipa_curva (slope = lectura del frame
                                  actual, sin retraso; "tendencia" del error tardaba
                                  ~0.5s en acumularse y llegaba tarde a la curva)
-yaw_term = yaw_correction * yaw_weight(0.3)  → solo si NO anticipa_curva
-ω = -(P+I+D+FF) + yaw_term, limitado a max_angular, suavizado (alpha=0.12)
+ω = -(P+I+D+FF), limitado a max_angular, suavizado (alpha=0.12)
 v = linear_speed * curve_speed_factor (0.30 × 0.6 = 0.18 m/s) — SIEMPRE, no solo en curvas
 ```
 
 `turn_threshold`/`last_w` quedaron obsoletos y se eliminaron — la anticipación de curva
 ahora es predictiva (vía cámara/slope) en vez de reactiva (vía el propio giro del robot).
 
-`yaw_term` no es una línea rígida: es solo un empujón suave que evita deriva lenta
-en tramos rectos. En curvas reales se apaga (igual que FF) para no resistir el giro
-ya anticipado por la cámara.
+**Sin término de rumbo fijo (`yaw_term`, eliminado).** Existía un empujón hacia un
+`initial_yaw` capturado una sola vez al arrancar, pensado como ayuda contra deriva
+lenta en tramos rectos. Se quitó porque, sin recalibrarse nunca, ese rumbo "objetivo"
+seguía apuntando a la dirección de ANTES de cada esquina real — el carril ya había
+girado ~90° pero el término seguía empujando hacia el rumbo viejo, compitiendo con
+esta misma ley de control (que sí ve la nueva dirección vía `e`/`slope`) y produciendo
+zigzag sostenido después de cada giro. El control depende 100% de lo que la cámara
+ve en cada frame, nunca de un plan de rumbo fijo.
 
 **La calibración durante el avance nunca es "frenar y girar"**: el robot siempre sigue
 avanzando mientras `angular.z` se ajusta gradualmente hacia la línea de recorrido
@@ -206,9 +211,15 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
 7. `self.error` nunca se pisa con `None` en NaN — solo `age` decide el estado
 8. Al arrancar NO hay calibración activa (no gira en el sitio) — solo espera quieto start_delay
    y luego avanza con PID directo desde la posición real en la que está el robot
-9. El yaw planeado es un empujón suave, no una línea rígida — se apaga en curvas reales
+9. No usar ningún rumbo/objetivo fijo capturado una sola vez (yaw inicial, ángulo planeado,
+   etc.) en la ley de control — no sigue al carril después de una esquina real y compite
+   con la corrección visual, causando zigzag. Todo input de control viene del frame actual
+   (e, slope); la IMU solo se usa para diagnóstico/log
 10. `lane_width_m` debe ser **0.22** (22cm reales) para que la mitad sea exactamente 11cm — si se
     cambia, el log de separación se recalcula solo (usa `target_cm` derivado, no un número fijo)
 11. La pista tiene esquinas ~90° reales, no curvas suaves continuas — por eso existen dos umbrales
     de `slope` distintos: uno para anticipar (FF, suave) y otro mayor para esquina real (giro
     lento dedicado, `in_sharp_turn`) — no confundirlos ni unificarlos en uno solo
+12. El giro de esquina (`in_sharp_turn`) no usa una tasa angular fija/preprogramada — se deriva
+    proporcionalmente de la pendiente ACTUAL del amarillo (`sharp_turn_kp_slope * slope`), igual
+    que el resto del control: todo viene de lo que la cámara ve en el frame actual

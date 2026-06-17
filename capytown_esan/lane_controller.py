@@ -16,7 +16,9 @@ Si no detecta NINGUNO de los dos colores por más de `error_timeout`, FRENA
 por completo (no avanza, no gira buscando) y se queda quieto hasta volver a
 detectar cualquiera de los dos colores — ahí retoma el PID normal de inmediato.
 
-IMU: registra yaw inicial cuando termina la espera de arranque (start_delay).
+IMU: solo se usa para el log de diagnóstico de posición, no en la ley de
+control — un rumbo objetivo fijo no sigue al carril después de una esquina
+real y termina compitiendo con la corrección visual.
 
 Convención: error > 0 → desplazado derecha → ω < 0
             error < 0 → desplazado izquierda → ω > 0
@@ -59,12 +61,11 @@ class LaneController(Node):
             ('start_delay',     5.0),
             ('imu_topic',       '/imu'),
             ('odom_topic',      '/odom_raw'),
-            ('yaw_weight',      0.3),    # peso del rumbo planeado (yaw inicial) en avance normal
             ('calib_tolerance', 0.025),  # m — error/pendiente máximos para considerar "centrado" (uso: salida de esquina)
             ('curve_speed_factor', 0.6), # reduce velocidad lineal 40% siempre
             ('slope_curve_threshold', 0.04),  # m — pendiente mínima para anticipar curva (predictivo)
             ('sharp_turn_slope_threshold', 0.13),  # m — pendiente que indica esquina ~90° real (antes 0.09, muy temprano)
-            ('sharp_turn_w',          0.40),   # rad/s — giro base dedicado en la esquina
+            ('sharp_turn_kp_slope',   3.0),    # ganancia del giro sobre la pendiente del amarillo (antes tasa fija sharp_turn_w)
             ('sharp_turn_kp_e',       2.5),    # ganancia sobre el error lateral — cierra el giro
             ('sharp_turn_max_w',      0.80),   # rad/s — tope del giro de esquina (base + corrección)
             ('sharp_turn_speed_factor', 0.3),  # avance muy reducido mientras gira en la esquina
@@ -84,12 +85,11 @@ class LaneController(Node):
         rate             = float(gp('control_rate').value)
         imu_topic        = str(gp('imu_topic').value)
         odom_topic       = str(gp('odom_topic').value)
-        self.yaw_weight  = float(gp('yaw_weight').value)
         self.calib_tolerance     = float(gp('calib_tolerance').value)
         self.curve_speed_factor   = float(gp('curve_speed_factor').value)
         self.slope_curve_threshold = float(gp('slope_curve_threshold').value)
         self.sharp_turn_slope_threshold = float(gp('sharp_turn_slope_threshold').value)
-        self.sharp_turn_w               = float(gp('sharp_turn_w').value)
+        self.sharp_turn_kp_slope         = float(gp('sharp_turn_kp_slope').value)
         self.sharp_turn_kp_e            = float(gp('sharp_turn_kp_e').value)
         self.sharp_turn_max_w           = float(gp('sharp_turn_max_w').value)
         self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
@@ -106,9 +106,10 @@ class LaneController(Node):
         self.last_rx       = self.get_clock().now()
         self.anticipation_timer = 0.0   # tiempo acumulado anticipando una curva sin resolver
 
-        # IMU — yaw
-        self.yaw         = None
-        self.initial_yaw = None   # yaw cuando el robot arranca
+        # IMU — yaw (solo diagnóstico/log, no se usa en la ley de control:
+        # un rumbo fijo capturado una vez no sigue al carril después de un
+        # giro real, y termina compitiendo con la corrección visual del PID)
+        self.yaw = None
 
         # Odometría — posición real x,y
         self.pos_x  = None
@@ -139,12 +140,6 @@ class LaneController(Node):
     # ------------------------------------------------------------------
     def on_imu(self, msg):
         self.yaw = quat_to_yaw(msg.orientation)
-        # Solo registrar el yaw inicial DESPUÉS de start_delay
-        if self.initial_yaw is None and self.initialized:
-            elapsed = (self.get_clock().now() - self.start_time).nanoseconds * 1e-9
-            if elapsed >= self.start_delay:
-                self.initial_yaw = self.yaw
-                self.get_logger().info(f'Yaw inicial registrado: {math.degrees(self.yaw):.1f}°')
 
     def on_odom(self, msg):
         self.pos_x = msg.pose.pose.position.x
@@ -210,16 +205,6 @@ class LaneController(Node):
             self.in_corner      = True
             return True
         return False
-
-    def _yaw_correction(self):
-        """Corrección angular suave basada en desviación del yaw inicial."""
-        if self.yaw is None or self.initial_yaw is None:
-            return 0.0
-        delta = self.yaw - self.initial_yaw
-        # Normalizar a [-π, π]
-        delta = (delta + math.pi) % (2 * math.pi) - math.pi
-        # Ganancia baja: corrección de 0.05 rad/s por cada grado de desviación
-        return -delta * 0.8
 
     # ------------------------------------------------------------------
     def control_loop(self):
@@ -289,15 +274,17 @@ class LaneController(Node):
             self.anticipation_timer = 0.0   # ya se comprometió al giro, no sigue acumulando
 
         if self.in_sharp_turn:
-            # El giro NO es a un ritmo fijo (eso generaba un giro de radio
-            # constante — "abierto" — que no necesariamente converge al
-            # centro real, perdiendo el amarillo en vez de seguirlo). Se
-            # suma una corrección proporcional al error lateral ACTUAL: si
-            # llega a la esquina desviado, cierra más el giro para converger
-            # hacia el centro de las líneas proyectadas, no solo gira en
-            # blanco. Mismo signo que la corrección normal (-(...)).
-            turn_dir = math.copysign(1.0, self.slope) if self.slope != 0.0 else 1.0
-            w_target = -(turn_dir * self.sharp_turn_w + self.sharp_turn_kp_e * e)
+            # El giro NO es a un ritmo fijo/preprogramado (eso generaba un
+            # giro de radio constante — "abierto" — que no necesariamente
+            # converge al centro real, perdiendo el amarillo en vez de
+            # seguirlo, y no reflejaba lo que la cámara realmente ve). El
+            # giro se deriva directamente de la pendiente ACTUAL del
+            # amarillo (sharp_turn_kp_slope * slope): si la línea está muy
+            # de canto, gira fuerte; si ya casi se enderezó, gira poco —
+            # proporcional a lo que el amarillo muestra en cada frame, no
+            # a una tasa fija. Se suma la corrección sobre el error lateral
+            # ACTUAL para converger al centro si llegó desviado a la esquina.
+            w_target = -(self.sharp_turn_kp_slope * self.slope + self.sharp_turn_kp_e * e)
             w_target = max(-self.sharp_turn_max_w, min(self.sharp_turn_max_w, w_target))
             cmd.angular.z = self._smooth(w_target, alpha=0.10)
             cmd.linear.x  = self.v * self.sharp_turn_speed_factor
@@ -327,14 +314,14 @@ class LaneController(Node):
         anticipa_curva = abs(self.slope) > self.slope_curve_threshold
         FF = self.kff * self.slope if anticipa_curva else 0.0
 
-        # Corrección complementaria de bajo peso hacia la línea recta planeada
-        # en la calibración inicial (initial_yaw). NO es una línea rígida: solo
-        # actúa en tramos rectos para evitar deriva lenta; se desactiva igual
-        # que el feed-forward cuando se anticipa una curva, para no resistir
-        # el giro que la cámara ya está viendo venir.
-        yaw_term = (self._yaw_correction() * self.yaw_weight) if not anticipa_curva else 0.0
-
-        w_pid = -(P + I + D + FF) + yaw_term
+        # SIN término de rumbo fijo (yaw_term, eliminado): un rumbo objetivo
+        # capturado una sola vez al arrancar no sigue al carril después de
+        # una esquina real (el carril ya giró ~90°, pero ese rumbo "objetivo"
+        # seguía siendo el de antes de la esquina) — competía con esta misma
+        # ley de control y producía zigzag sostenido. El control depende
+        # 100% de lo que la cámara ve en cada frame (e, slope), nunca de un
+        # plan fijo.
+        w_pid = -(P + I + D + FF)
         w_pid = max(-self.max_w, min(self.max_w, w_pid))
 
         self.in_corner = False   # si sigue viendo amarillo, ya salió de la curva
