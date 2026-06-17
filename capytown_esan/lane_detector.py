@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """CapyTown lane_detector - Semana 11 (RC-2).
 
-Amarillo (izquierda): HSV
-Blanco  (derecha):    LAB — más robusto ante reflejos que HSV
+Amarillo (izquierda): HSV — ÚNICA referencia para calcular el error/centro.
+Blanco  (derecha):    LAB — se detecta y se muestra en el debug, pero NO
+                       interviene en el cálculo (mete demasiado ruido/error).
 
-El robot va al CENTRO entre las dos líneas.
+El robot va siempre a "amarillo + 11cm" (centro real del carril de 22cm).
+
+3 bandas horizontales (superior, central, inferior) sobre la imagen: se mide
+el amarillo en cada una y se promedia — usa toda la línea visible, no un
+solo punto. Esos 3 puntos también trazan la línea de recorrido (guía) que
+se recalcula en cada frame, mostrada en magenta en el debug.
 
 Convención de signo:
   error > 0  →  centro a la DERECHA  →  girar derecha (ω < 0)
@@ -46,9 +52,8 @@ class LaneDetector(Node):
             ('yellow_v_max', 255),
             # Geometría
             ('min_area',        150),
-            ('lane_width_m',    0.21),
+            ('lane_width_m',    0.22),
             ('px_per_meter',    600.0),
-            ('look_ahead_row',  0.88),
             ('publish_debug',   True),
         ])
 
@@ -73,11 +78,16 @@ class LaneDetector(Node):
         self.min_area       = float(gp('min_area').value)
         self.lane_width_m   = float(gp('lane_width_m').value)
         self.px_per_meter   = float(gp('px_per_meter').value)
-        self.look_ahead_row = float(gp('look_ahead_row').value)
         self.publish_debug  = bool(gp('publish_debug').value)
 
         self.M         = None
         self.warp_size = None
+
+        # Filtro EMA sobre los centroides — reduce jitter frame-a-frame
+        # que de otro modo se amplifica en el término D del PID
+        self.x_yellow_f = None
+        self.x_white_f  = None
+        self.ema_alpha  = 0.5
 
         self.sub     = self.create_subscription(
             Image, '/image_raw', self.on_image, 10)
@@ -156,45 +166,76 @@ class LaneDetector(Node):
         # Filtrar blanco: solo líneas consecutivas, no manchas grandes
         mask_white = self._filter_line_shape(mask_white_raw)
 
-        row  = int(self.look_ahead_row * h)
-        band = slice(max(0, row - 8), min(h, row + 8))
-        x_yellow = self._centroid_x(mask_yellow[band, :])
-        x_white  = self._centroid_x(mask_white[band, :])
+        # SOLO AMARILLO para calibración/error — el blanco se sigue detectando
+        # y mostrando en el debug, pero no se usa en el cálculo (mete demasiado
+        # error/ruido). 3 bandas (superior, central, inferior) sobre la imagen:
+        # se calcula amarillo+11cm en cada una y se traza la línea de recorrido
+        # (guía) que minimiza el error, recalculada en cada frame.
+        band_rows  = [h // 6, h // 2, (5 * h) // 6]   # superior, central, inferior
+        band_slices = [
+            slice(0, h // 3),
+            slice(h // 3, (2 * h) // 3),
+            slice((2 * h) // 3, h),
+        ]
 
         lane_width_px = self.lane_width_m * self.px_per_meter
 
-        # Rechazar blanco que esté a la izquierda del amarillo (imposible físicamente)
-        # o que esté fuera del rango 60-130% del ancho de carril esperado
-        if x_yellow is not None and x_white is not None:
-            dist_px = x_white - x_yellow
-            if dist_px <= 0 or dist_px < lane_width_px * 0.6 or dist_px > lane_width_px * 1.3:
-                x_white = None
+        def _band_yellow_center(sl):
+            """Centro del carril (amarillo+11cm) en una banda, usando solo amarillo."""
+            xy = self._centroid_x(mask_yellow[sl, :])
+            if xy is None:
+                return None, None
+            return xy, xy + lane_width_px / 2.0
 
-        # Centro del carril — siempre 11cm a la derecha del amarillo
-        if x_yellow is not None and x_white is not None:
-            center_px = (x_yellow + x_white) / 2.0
-        elif x_yellow is not None:
-            center_px = x_yellow + lane_width_px / 2.0   # 11cm a la derecha del amarillo
-        else:
-            center_px = None   # sin amarillo → NaN
+        band_points    = [_band_yellow_center(sl) for sl in band_slices]  # [(xy,xc), ...]
+        trajectory_pts = [(c, r) for (_, c), r in zip(band_points, band_rows) if c is not None]
+
+        # Promedio de los centroides de amarillo válidos en las 3 bandas — usa
+        # toda la línea visible, no solo un punto, para el cálculo del error.
+        yellow_vals  = [xy for xy, _ in band_points if xy is not None]
+        x_yellow_raw = sum(yellow_vals) / len(yellow_vals) if yellow_vals else None
+
+        # Blanco: solo se calcula para mostrarlo en el debug, NO se usa en el error
+        x_white_raw = self._centroid_x(mask_white)
+
+        # Filtro EMA — suaviza el centroide antes de usarlo en el cálculo de error
+        x_yellow = self._ema_update('x_yellow_f', x_yellow_raw)
+        x_white  = self._ema_update('x_white_f',  x_white_raw)   # solo informativo
+
+        # Centro del carril — siempre amarillo + 11cm (el blanco no interviene)
+        center_px = x_yellow + lane_width_px / 2.0 if x_yellow is not None else None
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
-        # Corrección de proximidad: si el amarillo se acerca demasiado al centro
-        # (robot derivando hacia la izquierda), empuje fuerte a la derecha
-        if x_yellow is not None and not math.isnan(error_m):
-            yellow_warn_px = w * 0.32   # 32% — umbral más ajustado
-            if x_yellow > yellow_warn_px:
-                intrusion = (x_yellow - yellow_warn_px) / self.px_per_meter
-                error_m  += intrusion * 2.0   # ganancia alta para forzar corrección derecha
+        # Log de diagnóstico: posición robot, posición amarillo, separación real vs la mitad
+        # del carril esperada (target_cm, derivado de lane_width_m — nunca un número fijo).
+        # error_sep_cm = separacion_cm - target_cm → 0 = separación correcta
+        #                                             negativo = se ACERCA al amarillo
+        #                                             positivo = se ALEJA del amarillo
+        if x_yellow is not None:
+            target_cm     = self.lane_width_m * 100.0 / 2.0   # mitad del carril, en cm
+            separacion_cm = ((w / 2.0) - x_yellow) / self.px_per_meter * 100.0
+            error_sep_cm  = separacion_cm - target_cm
+            if error_sep_cm < -0.3:
+                estado = 'se ACERCA al amarillo'
+            elif error_sep_cm > 0.3:
+                estado = 'se ALEJA del amarillo'
+            else:
+                estado = f'separación correcta ({target_cm:.1f}cm)'
+            self.get_logger().info(
+                f'Robot(centro)={w/2:.0f}px  Amarillo={x_yellow:.0f}px  '
+                f'separación={separacion_cm:.1f}cm  error={error_sep_cm:+.1f}cm  → {estado}',
+                throttle_duration_sec=0.5)
+        else:
+            self.get_logger().info('Sin amarillo detectado', throttle_duration_sec=0.5)
 
         out      = Float32()
         out.data = float(error_m)
         self.pub_err.publish(out)
 
         if self.publish_debug:
-            self._publish_debug(warp, mask_white, mask_yellow, row,
-                                x_white, x_yellow, center_px, msg)
+            self._publish_debug(warp, mask_white, mask_yellow, band_rows,
+                                x_white, x_yellow, center_px, msg, trajectory_pts)
 
     # ------------------------------------------------------------------
     def _filter_line_shape(self, mask):
@@ -211,6 +252,19 @@ class LaneDetector(Node):
                 cv2.drawContours(result, [cnt], -1, 255, -1)
         return result
 
+    def _ema_update(self, attr, value):
+        """Filtro exponencial: suaviza la lectura cruda, resetea si se pierde detección."""
+        prev = getattr(self, attr)
+        if value is None:
+            setattr(self, attr, None)
+            return None
+        if prev is None:
+            setattr(self, attr, value)
+            return value
+        filtered = (1.0 - self.ema_alpha) * prev + self.ema_alpha * value
+        setattr(self, attr, filtered)
+        return filtered
+
     @staticmethod
     def _centroid_x(mask):
         m = cv2.moments(mask, binaryImage=True)
@@ -218,25 +272,40 @@ class LaneDetector(Node):
             return None
         return m['m10'] / m['m00']
 
-    def _publish_debug(self, warp, mask_white, mask_yellow, row,
-                       xw, xy, xc, header_msg):
+    def _publish_debug(self, warp, mask_white, mask_yellow, band_rows,
+                       xw, xy, xc, header_msg, trajectory_pts=None):
         h, w = warp.shape[:2]
-        dbg = np.zeros((h, w, 3), dtype=np.uint8)
 
-        dbg[mask_white  > 0] = (255, 255, 255) # blanco   → blanco
-        dbg[mask_yellow > 0] = (0, 255, 255)   # amarillo → cyan (encima del blanco)
+        # Overlay translúcido sobre la cámara real (bird's-eye), no fondo negro:
+        # se ve la pista tal cual la cámara la capta, con las detecciones resaltadas.
+        overlay = warp.copy()
+        overlay[mask_white  > 0] = (255, 255, 255)  # blanco detectado (solo informativo)
+        overlay[mask_yellow > 0] = (0, 255, 255)    # amarillo detectado (cyan, encima) — el que se usa
+        dbg = cv2.addWeighted(overlay, 0.55, warp, 0.45, 0)
 
-        cv2.line(dbg, (0, row), (w, row), (0, 255, 0), 1)
+        # 3 líneas verdes = las 3 bandas (superior, central, inferior) donde
+        # se mide el amarillo para trazar la línea de recorrido
+        for r in band_rows:
+            cv2.line(dbg, (0, r), (w, r), (0, 255, 0), 1)
         cv2.line(dbg, (w // 2, 0), (w // 2, h), (128, 128, 128), 1)
 
+        # Línea de recorrido planeada: une los centros calculados en las
+        # bandas superior/central/inferior — magenta, bien distinguible.
+        if trajectory_pts and len(trajectory_pts) >= 2:
+            pts = np.array([[int(x), int(y)] for x, y in trajectory_pts], dtype=np.int32)
+            cv2.polylines(dbg, [pts], False, (255, 0, 255), 2)
+            for x, y in trajectory_pts:
+                cv2.circle(dbg, (int(x), int(y)), 4, (255, 0, 255), -1)
+
+        mid_row = band_rows[1]   # banda central, para los marcadores W/Y/C
         for x, color, label in (
             (xw, (200, 200, 200), 'W'),
             (xy, (0, 255, 255),   'Y'),
             (xc, (0, 0, 255),     'C'),
         ):
             if x is not None:
-                cv2.circle(dbg, (int(x), row), 6, color, -1)
-                cv2.putText(dbg, label, (int(x) + 8, row - 4),
+                cv2.circle(dbg, (int(x), mid_row), 6, color, -1)
+                cv2.putText(dbg, label, (int(x) + 8, mid_row - 4),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         out        = self.bridge.cv2_to_imgmsg(dbg, 'bgr8')

@@ -1,12 +1,12 @@
 lane_controller:
   ros__parameters:
 
-    kp: 4.0
-    ki: 0.3
-    kd: 0.4
-    kff: 1.0
+    kp: 2.2
+    ki: 0.12
+    kd: 0.25
+    kff: 0.6
 
-    linear_speed: 0.21   # m/s
+    linear_speed: 0.30    # m/s — requisito de competencia ≥ 0.2 m/s, con margen
 
     max_angular: 2.0
     integral_limit: 0.5
@@ -14,10 +14,16 @@ lane_controller:
     control_rate: 30.0
 
     calib_w: 0.20        # rad/s — límite máximo angular en búsqueda
-    drift_w: 0.15        # rad/s — giro suave buscando amarillo
-    drift_trend: 0.004   # umbral de tendencia para corrección anticipada
+    drift_w: 0.15        # rad/s — giro suave buscando amarillo (solo tras search_timeout)
+    search_timeout: 2.2  # s — pérdida sostenida antes de activar búsqueda real
 
     history_size: 15
     turn_threshold: 0.3
     start_delay: 5.0
     imu_topic: /imu
+    odom_topic: /odom_raw
+    yaw_weight: 0.3   # peso del rumbo planeado (yaw inicial) durante avance normal
+
+    calib_tolerance: 0.012      # m — error máximo para considerar "calibrado"
+    calib_stable_frames: 15     # frames consecutivos centrado+quieto para confirmar
+    calib_kp: 1.0                # ganancia angular suave durante calibración inicial

@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'lane_detector = capytown_esan.lane_detector:main',
             'lane_controller = capytown_esan.lane_controller:main',
+            'calib_hsv_lab = capytown_esan.calib_hsv_lab:main',
             'teleop_key = capytown_esan.teleop_key:main',
             'calibrate_beff = capytown_esan.calibrate_beff:main',
             'error_odom = capytown_esan.error_odom:main',

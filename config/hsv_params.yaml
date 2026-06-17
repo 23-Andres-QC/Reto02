@@ -21,7 +21,6 @@ lane_detector:
 
     # Geometría / IPM
     min_area: 150
-    lane_width_m: 0.21
+    lane_width_m: 0.22
     px_per_meter: 600.0
-    look_ahead_row: 0.88
     publish_debug: true

@@ -18,7 +18,6 @@ def generate_launch_description():
             name='lane_detector',
             parameters=[hsv],
             output='screen',
-            remappings=[('/camera/image_raw', '/image_raw')],
         ),
         Node(
             package='capytown_esan',

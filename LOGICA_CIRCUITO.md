@@ -1,0 +1,112 @@
+# Lógica de calibración, detección y rotación
+
+Referencia única. Para cambiar comportamiento, modificar esto primero y reflejar el cambio aquí.
+
+---
+
+## Detección (`lane_detector.py`)
+
+- **Amarillo (HSV)** = ÚNICA referencia para calcular error/centro. **Blanco (LAB)** se detecta y se
+  muestra en el debug, pero **no interviene en el cálculo** (metía demasiado ruido/error)
+- Centro objetivo = **amarillo + 11cm** siempre (mitad de 22cm de carril) — nunca depende del blanco
+- Sin amarillo → NaN (entra en búsqueda)
+- **3 bandas horizontales fijas** (superior, central, inferior — cada una 1/3 de la imagen): se mide
+  amarillo+11cm en cada una y el error final usa el **promedio de las 3** — aprovecha toda la línea
+  visible, no un solo punto
+- Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que el robot intenta
+  minimizar de error para avanzar recto — no es una línea fija, se vuelve a trazar constantemente
+  según dónde esté el amarillo
+- Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
+- Debug (`/lane/debug_image`): overlay translúcido sobre la cámara real (bird's-eye), no fondo negro;
+  **3 líneas verdes** = las 3 bandas de medición; **línea magenta** = recorrido planeado (3 puntos)
+
+## Error y signos
+
+```
+error > 0 → robot desplazado a la IZQUIERDA → girar DERECHA → ω < 0
+error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
+```
+
+## Arranque (`lane_controller.py`)
+
+```
+1. CALIBRACIÓN ACTIVA (no avanza, solo ajusta ángulo):
+   se activa al ver amarillo por primera vez.
+   w = -(calib_kp * e), limitado a ±calib_w
+   Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (1.2cm)
+   durante calib_stable_frames (15 frames ≈0.5s) seguidos.
+
+2. ESPERA: calibrado → captura calib_bias=e, initial_yaw (IMU),
+   pos_x0,y0 (odom) → espera start_delay (5s) sin moverse.
+
+3. AVANCE: termina la espera → PID normal.
+```
+
+## Control en avance — una sola ley PID
+
+```
+e = error - calib_bias  (si |e|<1cm → 0, ruido)
+P = kp*e   I = ki*integral(e), anti-windup   D = kd*(e-e_anterior)/dt
+FF = kff*tendencia          → solo si |ω_anterior| > turn_threshold (giro real)
+yaw_term = yaw_correction * yaw_weight(0.3)  → solo si NO está en giro real
+ω = -(P+I+D+FF) + yaw_term, limitado a max_angular, suavizado (alpha=0.12)
+v = linear_speed (0.30 m/s, cumple requisito de competencia ≥0.2 m/s)
+```
+
+`yaw_term` no es una línea rígida: es solo un empujón suave que evita deriva lenta
+en tramos rectos. En curvas reales se apaga (igual que FF) para no resistir el giro
+ya anticipado por la cámara.
+
+**La calibración durante el avance nunca es "frenar y girar"**: el robot siempre sigue
+avanzando (`linear.x = v`) mientras `angular.z` se ajusta gradualmente hacia la línea
+de recorrido recalculada cada frame. Si se desvía un poco, no se detiene a corregir —
+simplemente avanza con un pequeño sesgo angular hacia donde está la línea guía, hasta
+volver a estar alineado. Solo las curvas reales (giro sostenido >90°, detectado y
+anticipado con la tendencia del error) cambian la magnitud del giro; nunca cambian a
+"parar y rotar".
+
+## Pérdida de amarillo — dos umbrales (evita zigzag)
+
+```
+age = tiempo desde última lectura válida
+
+age <= error_timeout (0.8s)              → PID normal
+0.8s < age <= search_timeout (2.2s)      → pérdida breve: usa el e CONGELADO,
+                                             sin tocar integral/derivada, sigue recto
+age > search_timeout (2.2s)              → búsqueda real: gira izquierda (drift_w)
+                                             con rampa lenta (alpha=0.06) + corrección
+                                             hacia yaw inicial, avanza al 40%, nunca para
+```
+
+## Esquinas
+
+Acumula ángulo girado en una dirección. Si supera 90° → `in_corner=True` (informativo, no cambia la ley de control).
+
+## Herramienta de calibración (sin mover el robot)
+
+`capytown_esan/calib_hsv_lab.py` — réplica exacta de la detección de `lane_detector.py`
+(HSV/LAB, 3 bandas, línea guía, error, separación) pero **nunca publica `/cmd_vel`** y
+no depende de `lane_controller`. Sirve para mover el robot a mano y ver en consola/debug
+qué calcula en cada posición/ángulo, sin riesgo de que se mueva.
+
+```bash
+ros2 run capytown_esan calib_hsv_lab
+```
+
+Requiere que la cámara esté publicando en `/image_raw` (mismo topic que usa `lane_detector`).
+Debug visual en `/calib/debug_image` (ver con `rqt_image_view`). Imprime cada ~0.3s:
+amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), puntos de la línea guía.
+
+## Reglas de oro
+
+1. Nunca frenar del todo (salvo calibración inicial / espera) — siempre avanza, aunque sea despacio
+2. Pérdida sostenida → buscar izquierda con rampa lenta, nunca salto brusco a velocidad fija
+3. Pérdida breve → usar última lectura congelada, no cambiar de modo
+4. Centro objetivo siempre **amarillo + 11cm**, nunca el centro de la imagen
+5. Una sola ley de control PID — no ramas con ganancias distintas según error/tendencia
+6. No duplicar corrección de proximidad al amarillo — el error geométrico ya la incluye
+7. `self.error` nunca se pisa con `None` en NaN — solo `age` decide el estado
+8. Al arrancar, calibrar activamente (ángulo) antes de la espera — nunca asumir que ya está bien puesto
+9. El yaw planeado es un empujón suave, no una línea rígida — se apaga en curvas reales
+10. `lane_width_m` debe ser **0.22** (22cm reales) para que la mitad sea exactamente 11cm — si se
+    cambia, el log de separación se recalcula solo (usa `target_cm` derivado, no un número fijo)

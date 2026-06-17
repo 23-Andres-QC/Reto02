@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
 """CapyTown lane_controller - RC-2.
 
-Modos:
-  ESPERA    : espera 5s
-  AVANCE    : amarillo visible → avanza + PID
-  DERIVA    : tendencia creciente de error → micro-correcciones angulares SIN frenar
-  BUSCA     : amarillo perdido + curva → para + gira izquierda suave
+Secuencia de arranque:
+  1. Detecta amarillo por primera vez → entra en CALIBRACIÓN ACTIVA
+  2. CALIBRACIÓN ACTIVA: ajustes angulares suaves, SIN avanzar, hasta que
+     el error (y su tendencia) estén cerca de cero varios frames seguidos
+     → posición x,y correcta, ángulo recto respecto al amarillo/línea planeada
+  3. Calibrado → arranca cronómetro de start_delay (5s), sigue sin avanzar
+  4. Termina la espera → recién entonces avanza con PID
 
-IMU: registra yaw inicial cuando arranca.  Durante DERIVA usa el yaw actual
-     como referencia adicional para no alejarse del ángulo de partida.
+Una sola ley de control PID continua. Estados según el tiempo sin
+detección válida de amarillo (`age`):
+
+  age <= error_timeout (0.8s)                    → PID normal
+  error_timeout < age <= search_timeout (2.2s)    → pérdida breve: PID con
+                                                      el último error congelado
+                                                      (sin tocar integral/derivada)
+  age > search_timeout                            → búsqueda real: gira
+                                                      izquierda con rampa lenta,
+                                                      corrigiendo hacia el yaw
+                                                      inicial (IMU) para no
+                                                      desviarse del heading
+                                                      original mientras busca
+
+IMU: registra yaw inicial cuando termina la espera de arranque (start_delay).
 
 Convención: error > 0 → desplazado derecha → ω < 0
             error < 0 → desplazado izquierda → ω > 0
@@ -22,6 +37,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
+from nav_msgs.msg import Odometry
 
 CORNER_THRESHOLD = math.pi / 2.0   # 90° en rad
 
@@ -39,22 +55,27 @@ class LaneController(Node):
         super().__init__('lane_controller')
 
         self.declare_parameters('', [
-            ('kp',              4.0),
-            ('ki',              0.3),
-            ('kd',              0.4),
-            ('kff',             1.0),
-            ('linear_speed',    0.21),
+            ('kp',              2.2),
+            ('ki',              0.12),
+            ('kd',              0.25),
+            ('kff',             0.6),
+            ('linear_speed',    0.30),   # requisito de competencia ≥ 0.2 m/s, con margen
             ('max_angular',     2.0),
             ('calib_w',         0.20),
             ('drift_w',         0.15),   # rad/s giro suave buscando amarillo
-            ('drift_trend',     0.004),  # umbral de tendencia para activar DERIVA
             ('integral_limit',  0.5),
-            ('error_timeout',   0.8),
+            ('error_timeout',   0.8),    # pérdida breve: congela última corrección, sigue recto
+            ('search_timeout',  2.2),    # pérdida sostenida: recién aquí entra en búsqueda activa
             ('control_rate',    30.0),
             ('turn_threshold',  0.3),
             ('history_size',    15),
             ('start_delay',     5.0),
             ('imu_topic',       '/imu'),
+            ('odom_topic',      '/odom_raw'),
+            ('yaw_weight',      0.3),    # peso del rumbo planeado (yaw inicial) en avance normal
+            ('calib_tolerance', 0.012),  # m — error máximo para considerar "calibrado"
+            ('calib_stable_frames', 15), # frames consecutivos centrado+quieto para confirmar calibración
+            ('calib_kp',        1.0),    # ganancia angular suave durante calibración inicial (sin avanzar)
         ])
 
         gp = self.get_parameter
@@ -66,14 +87,19 @@ class LaneController(Node):
         self.max_w       = float(gp('max_angular').value)
         self.calib_w     = float(gp('calib_w').value)
         self.drift_w     = float(gp('drift_w').value)
-        self.drift_trend = float(gp('drift_trend').value)
         self.i_limit     = float(gp('integral_limit').value)
         self.timeout     = float(gp('error_timeout').value)
+        self.search_timeout = float(gp('search_timeout').value)
         self.turn_thr    = float(gp('turn_threshold').value)
         self.start_delay = float(gp('start_delay').value)
         hist             = int(gp('history_size').value)
         rate             = float(gp('control_rate').value)
         imu_topic        = str(gp('imu_topic').value)
+        odom_topic       = str(gp('odom_topic').value)
+        self.yaw_weight  = float(gp('yaw_weight').value)
+        self.calib_tolerance     = float(gp('calib_tolerance').value)
+        self.calib_stable_frames = int(gp('calib_stable_frames').value)
+        self.calib_kp             = float(gp('calib_kp').value)
 
         self.error         = None
         self.last_error    = 0.0
@@ -90,39 +116,80 @@ class LaneController(Node):
         self.yaw         = None
         self.initial_yaw = None   # yaw cuando el robot arranca
 
+        # Odometría — posición real x,y
+        self.pos_x  = None
+        self.pos_y  = None
+        self.pos_x0 = None   # origen registrado al iniciar
+        self.pos_y0 = None
+
         # Acumulador esquina
         self.cum_angle      = 0.0
         self.last_turn_sign = 0
         self.in_corner      = False
 
-        self.sub_err = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
-        self.sub_imu = self.create_subscription(Imu, imu_topic, self.on_imu, 10)
-        self.pub     = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.timer   = self.create_timer(1.0 / rate, self.control_loop)
+        # Calibración inicial: bias de error capturado al terminar start_delay.
+        self.calib_bias = None
+
+        # Fase de calibración ACTIVA (antes de start_delay): el robot ajusta su
+        # ángulo (sin avanzar) hasta que el error de cámara y su tendencia estén
+        # cerca de cero — recién ahí se considera "alineado y centrado" y arranca
+        # el cronómetro de start_delay.
+        self.pre_calibrated    = False
+        self.calib_stable_count = 0
+        self.calib_smooth_w     = 0.0
+
+        self.sub_err  = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
+        self.sub_imu  = self.create_subscription(Imu, imu_topic, self.on_imu, 10)
+        self.sub_odom = self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
+        self.pub      = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.timer    = self.create_timer(1.0 / rate, self.control_loop)
+        self.log_timer = self.create_timer(0.5, self._log_position)
 
         self.get_logger().info(
             f'lane_controller — v={self.v:.3f} calib_w={self.calib_w:.2f} '
-            f'drift_w={self.drift_w:.2f} drift_trend={self.drift_trend}')
+            f'drift_w={self.drift_w:.2f} kp={self.kp}')
 
     # ------------------------------------------------------------------
     def on_imu(self, msg):
         self.yaw = quat_to_yaw(msg.orientation)
-        if self.initial_yaw is None and self.initialized:
+        # Solo registrar el yaw inicial DESPUÉS de la calibración activa + start_delay
+        if self.initial_yaw is None and self.pre_calibrated:
             elapsed = (self.get_clock().now() - self.start_time).nanoseconds * 1e-9
             if elapsed >= self.start_delay:
                 self.initial_yaw = self.yaw
                 self.get_logger().info(f'Yaw inicial registrado: {math.degrees(self.yaw):.1f}°')
 
+    def on_odom(self, msg):
+        self.pos_x = msg.pose.pose.position.x
+        self.pos_y = msg.pose.pose.position.y
+        if self.pos_x0 is None and self.pre_calibrated:
+            elapsed = (self.get_clock().now() - self.start_time).nanoseconds * 1e-9
+            if elapsed >= self.start_delay:
+                self.pos_x0 = self.pos_x
+                self.pos_y0 = self.pos_y
+                self.get_logger().info(f'Posición inicial registrada: ({self.pos_x0:.3f}, {self.pos_y0:.3f})')
+
+    def _log_position(self):
+        if self.pos_x is None:
+            self.get_logger().info('Posición robot: sin odometría aún')
+            return
+        rel_x = self.pos_x - self.pos_x0 if self.pos_x0 is not None else self.pos_x
+        rel_y = self.pos_y - self.pos_y0 if self.pos_y0 is not None else self.pos_y
+        yaw_deg = math.degrees(self.yaw) if self.yaw is not None else float('nan')
+        self.get_logger().info(
+            f'Posición robot: x={rel_x:+.3f}m y={rel_y:+.3f}m yaw={yaw_deg:.1f}°')
+
     def on_error(self, msg):
+        # OJO: solo actualizamos self.error con lecturas válidas.
+        # Si llega NaN, NO lo pisamos — así "age" (tiempo desde la última
+        # lectura válida) es la única señal que decide modo búsqueda,
+        # y self.error nunca queda en None mientras age <= timeout.
         if not math.isnan(msg.data):
             self.error   = msg.data
             self.last_rx = self.get_clock().now()
             if not self.initialized:
                 self.initialized = True
-                self.start_time  = self.get_clock().now()
-                self.get_logger().info(f'Amarillo — esperando {self.start_delay:.0f}s...')
-        else:
-            self.error = None
+                self.get_logger().info('Amarillo detectado — calibrando posición inicial...')
 
     # ------------------------------------------------------------------
     def _trend(self):
@@ -172,10 +239,51 @@ class LaneController(Node):
         if dt <= 0.0:
             return
 
-        # ── ESPERA ───────────────────────────────────────────────────
+        # ── SIN DETECCIÓN AÚN ────────────────────────────────────────
         if not self.initialized:
             self.pub.publish(Twist())
             return
+
+        # ── CALIBRACIÓN ACTIVA: busca su punto de partida ────────────
+        # El robot llega mirando al amarillo pero no necesariamente bien
+        # alineado/centrado. Aquí NO avanza — solo hace ajustes angulares
+        # suaves hasta que el error (y su tendencia, para detectar que no
+        # sigue derivando) estén cerca de cero durante varios frames
+        # consecutivos. Recién ahí se considera "calibrado": posición x,y
+        # correcta, ángulo recto respecto al amarillo y a la línea de
+        # recorrido, distancia exacta amarillo↔centro.
+        if not self.pre_calibrated:
+            e = self.error if self.error is not None else 0.0
+            self.error_history.append(e)
+            trend = self._trend()
+
+            if abs(e) < self.calib_tolerance and abs(trend) < self.calib_tolerance:
+                self.calib_stable_count += 1
+            else:
+                self.calib_stable_count = 0
+
+            if self.calib_stable_count >= self.calib_stable_frames:
+                self.pre_calibrated = True
+                self.calib_bias     = e            # bias residual al momento de calibrar
+                self.start_time     = now           # arranca el cronómetro de start_delay AHORA
+                self.error_history.clear()
+                self.calib_smooth_w = 0.0
+                self.get_logger().info(
+                    f'Calibración inicial lograda (error={e*100:+.2f}cm) — '
+                    f'esperando {self.start_delay:.0f}s antes de avanzar...')
+                self.pub.publish(Twist())
+                return
+
+            w_calib = -(self.calib_kp * e)
+            w_calib = max(-self.calib_w, min(self.calib_w, w_calib))
+            self.calib_smooth_w = 0.85 * self.calib_smooth_w + 0.15 * w_calib
+            cmd = Twist()
+            cmd.angular.z = self.calib_smooth_w
+            cmd.linear.x  = 0.0   # nunca avanza durante la calibración inicial
+            self.pub.publish(cmd)
+            return
+
+        # ── ESPERA (tras calibrar, antes de avanzar) ─────────────────
         if (now - self.start_time).nanoseconds * 1e-9 < self.start_delay:
             self.pub.publish(Twist())
             return
@@ -183,50 +291,68 @@ class LaneController(Node):
         age = (now - self.last_rx).nanoseconds * 1e-9
         cmd = Twist()
 
-        # ── SIN AMARILLO: gira izquierda suave mientras avanza ───────
-        if age > self.timeout:
+        # ── PÉRDIDA SOSTENIDA (> search_timeout): recién aquí búsqueda activa ──
+        # Esto es la curva genuina / fuera de pista real. Rampa MUY lenta
+        # (alpha bajo) para no generar un giro brusco que cambie la posición.
+        if age > self.search_timeout:
             self.integral = 0.0
             self.error_history.clear()
-            cmd.angular.z = self._smooth(+self.drift_w, alpha=0.12)   # siempre izquierda
-            cmd.linear.x  = self.v * 0.4                               # siempre avanza
+            # Corrección hacia el yaw inicial mientras busca, para no
+            # desviarse del heading original durante la búsqueda
+            yaw_corr = self._yaw_correction()
+            w_target = self.drift_w + yaw_corr
+            w_target = max(-self.calib_w, min(self.calib_w, w_target))
+            cmd.angular.z = self._smooth(w_target, alpha=0.06)
+            cmd.linear.x  = self.v * 0.4
             self.pub.publish(cmd)
             self._track_corner(cmd.angular.z, dt)
             self.last_w = cmd.angular.z
             return
 
-        e = self.error
-        self.error_history.append(e)
+        # ── PÉRDIDA BREVE (timeout < age <= search_timeout): NO cambia de modo ──
+        # Se sigue usando la última lectura válida conocida (self.error, congelada)
+        # en la misma ley PID. Esto evita el salto que generaba el zigzag:
+        # antes, perder el amarillo un instante disparaba un giro fijo que
+        # cambiaba la posición real del robot y generaba el error opuesto.
+        stale = age > self.timeout
+
+        e = self.error - self.calib_bias   # corrige contra el bias capturado al inicio
+        if abs(e) < 0.01:
+            e = 0.0
+
+        if not stale:
+            self.error_history.append(e)
         trend = self._trend()
 
-        # ── DETECTA DERIVA INCIPIENTE: tendencia creciente → micro-corrección anticipada ──
-        drifting = abs(trend) > self.drift_trend
-
-        # ── AVANCE con PID ───────────────────────────────────────────
+        # ── AVANCE con PID — una sola ley de control, sin saltos de modo ──
         P = self.kp * e
-        self.integral += e * dt
-        self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
-        I = self.ki * self.integral
-        D = self.kd * (e - self.last_error) / dt
+        if not stale:
+            self.integral += e * dt
+            self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
+        I  = self.ki * self.integral
+        D  = self.kd * (e - self.last_error) / dt if not stale else 0.0
+        FF = self.kff * trend if abs(self.last_w) > self.turn_thr else 0.0
 
-        if drifting:
-            # Tendencia de perder amarillo: amplifica corrección, no usa FF para no sobregirar
-            w_pid = -(P + I + D)
-            # Limita a drift_w para que sea suave
-            w_pid = max(-self.drift_w * 3, min(self.drift_w * 3, w_pid))
-        else:
-            FF    = self.kff * trend if abs(self.last_w) > self.turn_thr else 0.0
-            w_pid = -(P + I + D + FF)
-            w_pid = max(-self.max_w, min(self.max_w, w_pid))
+        # Corrección complementaria de bajo peso hacia la línea recta planeada
+        # en la calibración inicial (initial_yaw). NO es una línea rígida: solo
+        # actúa en tramos rectos para evitar deriva lenta; se desactiva igual
+        # que el feed-forward cuando el robot ya está en un giro real
+        # (|last_w| > turn_threshold), para no resistir las curvas anticipadas.
+        yaw_term = (self._yaw_correction() * self.yaw_weight) if abs(self.last_w) <= self.turn_thr else 0.0
+
+        w_pid = -(P + I + D + FF) + yaw_term
+        w_pid = max(-self.max_w, min(self.max_w, w_pid))
 
         self.in_corner = False   # si sigue viendo amarillo, ya salió de la curva
         cmd.linear.x   = self.v
-        cmd.angular.z  = self._smooth(w_pid, alpha=0.25 if drifting else 0.30)
+        cmd.angular.z  = self._smooth(w_pid, alpha=0.12)   # transición lenta — calibración gradual
         self.pub.publish(cmd)
 
         self._track_corner(cmd.angular.z, dt)
 
-        self.last_error = e
-        self.last_w     = cmd.angular.z
+        if not stale:
+            self.last_error = e
+        self.last_w = cmd.angular.z
 
 
 def main(args=None):
