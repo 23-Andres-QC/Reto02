@@ -70,23 +70,31 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
 ```
 e = error - calib_bias  (si |e|<1cm → 0, ruido)
 P = kp*e   I = ki*integral(e), anti-windup   D = kd*(e-e_anterior)/dt
-FF = kff*tendencia          → solo si |ω_anterior| > turn_threshold (giro real)
-yaw_term = yaw_correction * yaw_weight(0.3)  → solo si NO está en giro real
+
+anticipa_curva = |slope| > slope_curve_threshold (4cm)
+  → PREDICTIVO: usa la pendiente de la línea guía (banda superior vs inferior),
+    no el giro que el robot ya está haciendo. La cámara ve la curva venir
+    (el punto de arriba se desvía) antes de que el robot tenga que girar fuerte.
+
+FF = kff*tendencia            → solo si anticipa_curva
+yaw_term = yaw_correction * yaw_weight(0.3)  → solo si NO anticipa_curva
 ω = -(P+I+D+FF) + yaw_term, limitado a max_angular, suavizado (alpha=0.12)
-v = linear_speed (0.30 m/s, cumple requisito de competencia ≥0.2 m/s)
+v = linear_speed * curve_speed_factor (0.30 × 0.6 = 0.18 m/s) — SIEMPRE, no solo en curvas
 ```
+
+`turn_threshold`/`last_w` quedaron obsoletos y se eliminaron — la anticipación de curva
+ahora es predictiva (vía cámara/slope) en vez de reactiva (vía el propio giro del robot).
 
 `yaw_term` no es una línea rígida: es solo un empujón suave que evita deriva lenta
 en tramos rectos. En curvas reales se apaga (igual que FF) para no resistir el giro
 ya anticipado por la cámara.
 
 **La calibración durante el avance nunca es "frenar y girar"**: el robot siempre sigue
-avanzando (`linear.x = v`) mientras `angular.z` se ajusta gradualmente hacia la línea
-de recorrido recalculada cada frame. Si se desvía un poco, no se detiene a corregir —
-simplemente avanza con un pequeño sesgo angular hacia donde está la línea guía, hasta
-volver a estar alineado. Solo las curvas reales (giro sostenido >90°, detectado y
-anticipado con la tendencia del error) cambian la magnitud del giro; nunca cambian a
-"parar y rotar".
+avanzando mientras `angular.z` se ajusta gradualmente hacia la línea de recorrido
+recalculada cada frame. Si se desvía un poco, no se detiene a corregir — simplemente
+avanza con un pequeño sesgo angular hacia donde está la línea guía, hasta volver a
+estar alineado. Nunca cambia a "parar y rotar" (eso solo pasa en pérdida sostenida
+de amarillo, ver sección siguiente).
 
 ## Pérdida de amarillo — dos umbrales (evita zigzag)
 
