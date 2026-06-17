@@ -8,7 +8,8 @@
       "Bash(python3 -c ' *)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lane_controller.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

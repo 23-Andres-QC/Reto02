@@ -18,7 +18,6 @@ lane_controller:
     search_timeout: 2.2  # s — pérdida sostenida antes de activar búsqueda real
 
     history_size: 15
-    turn_threshold: 0.3
     start_delay: 5.0
     imu_topic: /imu
     odom_topic: /odom_raw
@@ -30,3 +29,5 @@ lane_controller:
     slope_tolerance: 0.03       # m — pendiente máxima de la línea guía para considerar "recto" (antes 1.5cm)
     calib_kp_slope: 2.0           # ganancia angular sobre la pendiente durante calibración
     calib_min_w: 0.12             # rad/s — piso mínimo para superar zona muerta del motor
+    curve_speed_factor: 0.6       # reduce velocidad lineal 40% SIEMPRE (no solo en curvas)
+    slope_curve_threshold: 0.04   # m — pendiente mínima para anticipar curva (predictivo, vía cámara)

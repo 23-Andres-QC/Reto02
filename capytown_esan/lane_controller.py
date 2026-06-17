@@ -67,7 +67,6 @@ class LaneController(Node):
             ('error_timeout',   0.8),    # pérdida breve: congela última corrección, sigue recto
             ('search_timeout',  2.2),    # pérdida sostenida: recién aquí entra en búsqueda activa
             ('control_rate',    30.0),
-            ('turn_threshold',  0.3),
             ('history_size',    15),
             ('start_delay',     5.0),
             ('imu_topic',       '/imu'),
@@ -79,6 +78,8 @@ class LaneController(Node):
             ('slope_tolerance', 0.03),   # m — pendiente máx. de la línea guía para considerar "recto"
             ('calib_kp_slope',  2.0),    # ganancia angular sobre la pendiente durante calibración
             ('calib_min_w',     0.12),   # rad/s — piso mínimo para superar zona muerta del motor
+            ('curve_speed_factor', 0.6), # reduce velocidad lineal 40% siempre
+            ('slope_curve_threshold', 0.04),  # m — pendiente mínima para anticipar curva (predictivo)
         ])
 
         gp = self.get_parameter
@@ -93,7 +94,6 @@ class LaneController(Node):
         self.i_limit     = float(gp('integral_limit').value)
         self.timeout     = float(gp('error_timeout').value)
         self.search_timeout = float(gp('search_timeout').value)
-        self.turn_thr    = float(gp('turn_threshold').value)
         self.start_delay = float(gp('start_delay').value)
         hist             = int(gp('history_size').value)
         rate             = float(gp('control_rate').value)
@@ -106,11 +106,12 @@ class LaneController(Node):
         self.slope_tolerance      = float(gp('slope_tolerance').value)
         self.calib_kp_slope       = float(gp('calib_kp_slope').value)
         self.calib_min_w          = float(gp('calib_min_w').value)
+        self.curve_speed_factor   = float(gp('curve_speed_factor').value)
+        self.slope_curve_threshold = float(gp('slope_curve_threshold').value)
 
         self.error         = None
         self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
         self.last_error    = 0.0
-        self.last_w        = 0.0
         self.smooth_w      = 0.0
         self.integral      = 0.0
         self.initialized   = False
@@ -330,7 +331,6 @@ class LaneController(Node):
             cmd.linear.x  = self.v * 0.4
             self.pub.publish(cmd)
             self._track_corner(cmd.angular.z, dt)
-            self.last_w = cmd.angular.z
             return
 
         # ── PÉRDIDA BREVE (timeout < age <= search_timeout): NO cambia de modo ──
@@ -355,20 +355,29 @@ class LaneController(Node):
             self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
         I  = self.ki * self.integral
         D  = self.kd * (e - self.last_error) / dt if not stale else 0.0
-        FF = self.kff * trend if abs(self.last_w) > self.turn_thr else 0.0
+
+        # Anticipación de curva: el punto de la banda SUPERIOR (más lejos) se
+        # desvía del inferior antes de que el robot mismo tenga que girar
+        # fuerte — eso es la pendiente (slope) de la línea guía. Detectar la
+        # curva por slope es predictivo (la cámara ve la curva venir); usar
+        # |last_w| sería reactivo (recién detecta cuando ya está girando).
+        anticipa_curva = abs(self.slope) > self.slope_curve_threshold
+        FF = self.kff * trend if anticipa_curva else 0.0
 
         # Corrección complementaria de bajo peso hacia la línea recta planeada
         # en la calibración inicial (initial_yaw). NO es una línea rígida: solo
         # actúa en tramos rectos para evitar deriva lenta; se desactiva igual
-        # que el feed-forward cuando el robot ya está en un giro real
-        # (|last_w| > turn_threshold), para no resistir las curvas anticipadas.
-        yaw_term = (self._yaw_correction() * self.yaw_weight) if abs(self.last_w) <= self.turn_thr else 0.0
+        # que el feed-forward cuando se anticipa una curva, para no resistir
+        # el giro que la cámara ya está viendo venir.
+        yaw_term = (self._yaw_correction() * self.yaw_weight) if not anticipa_curva else 0.0
 
         w_pid = -(P + I + D + FF) + yaw_term
         w_pid = max(-self.max_w, min(self.max_w, w_pid))
 
         self.in_corner = False   # si sigue viendo amarillo, ya salió de la curva
-        cmd.linear.x   = self.v
+        # Velocidad reducida 40% siempre (no solo en curvas) — margen de
+        # reacción y corrección más cómodo en todo el recorrido.
+        cmd.linear.x   = self.v * self.curve_speed_factor
         cmd.angular.z  = self._smooth(w_pid, alpha=0.12)   # transición lenta — calibración gradual
         self.pub.publish(cmd)
 
@@ -376,7 +385,6 @@ class LaneController(Node):
 
         if not stale:
             self.last_error = e
-        self.last_w = cmd.angular.z
 
 
 def main(args=None):
