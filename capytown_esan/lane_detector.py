@@ -208,13 +208,15 @@ class LaneDetector(Node):
         band_points    = [_band_center(sl) for sl in band_slices]  # [(xy,xw,xc), ...]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Pendiente de la línea guía (superior vs inferior): si la línea no está
-        # vertical, el robot está desalineado angularmente respecto a la pista,
-        # aunque el error promedio sea ~0. Se usa en la calibración inicial para
-        # exigir que el robot arranque realmente recto, no solo bien centrado.
-        if len(trajectory_pts) >= 2:
-            (x_top, y_top), (x_bot, y_bot) = trajectory_pts[0], trajectory_pts[-1]
-            slope_m = (x_top - x_bot) / self.px_per_meter
+        # Pendiente de la línea guía: CENTRO vs INFERIOR (no superior vs inferior).
+        # El punto superior (banda lejana) ve la curva mucho antes de que el
+        # robot realmente llegue ahí — usarlo anticipaba demasiado pronto el
+        # giro. Centro-inferior es un tramo más cercano al robot, así la
+        # anticipación/esquina se dispara cuando la curva está realmente cerca.
+        x_mid = band_points[1][2]   # banda central
+        x_bot = band_points[2][2]   # banda inferior
+        if x_mid is not None and x_bot is not None:
+            slope_m = (x_mid - x_bot) / self.px_per_meter
         else:
             slope_m = float('nan')
 

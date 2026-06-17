@@ -21,9 +21,11 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que el robot intenta
   minimizar de error para avanzar recto — no es una línea fija, se vuelve a trazar constantemente
   según dónde esté el amarillo
-- También se publica `/lane_slope`: la pendiente entre el punto superior e inferior de esa línea
-  guía (0 = recta/vertical, distinto de 0 = el robot está angulado respecto a la pista). Se usa
-  en la calibración inicial para exigir que el robot arranque realmente derecho, no solo centrado
+- También se publica `/lane_slope`: la pendiente entre el punto **central** e **inferior** de esa
+  línea guía (0 = recta/vertical, distinto de 0 = el robot está angulado respecto a la pista).
+  Se usa centro-inferior y NO superior-inferior — el punto superior (banda lejana) ve la curva
+  mucho antes de que el robot realmente llegue, así que usarlo anticipaba el giro demasiado pronto.
+  Se usa en la calibración inicial para exigir que el robot arranque realmente derecho, no solo centrado
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
 - **Zona de seguridad** (25% del carril ≈5.5cm desde cada línea): si el robot se acerca demasiado
   a la amarilla o a la blanca, refuerza el error (empujón ×1.5) para alejarlo antes de cruzarla.
@@ -97,9 +99,9 @@ e = error - calib_bias  (si |e|<1cm → 0, ruido)
 P = kp*e   I = ki*integral(e), anti-windup   D = kd*(e-e_anterior)/dt
 
 anticipa_curva = |slope| > slope_curve_threshold (4cm)
-  → PREDICTIVO: usa la pendiente de la línea guía (banda superior vs inferior),
-    no el giro que el robot ya está haciendo. La cámara ve la curva venir
-    (el punto de arriba se desvía) antes de que el robot tenga que girar fuerte.
+  → PREDICTIVO: usa la pendiente de la línea guía (banda CENTRAL vs INFERIOR,
+    no superior vs inferior — el punto lejano anticipaba demasiado pronto),
+    no el giro que el robot ya está haciendo.
 
 FF = kff*slope                → solo si anticipa_curva (slope = lectura del frame
                                  actual, sin retraso; "tendencia" del error tardaba

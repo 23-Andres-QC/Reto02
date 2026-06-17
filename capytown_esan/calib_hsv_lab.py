@@ -204,9 +204,12 @@ class CalibHsvLab(Node):
         band_points    = [band_center(sl) for sl in band_slices]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        if len(trajectory_pts) >= 2:
-            (x_top, _), (x_bot, _) = trajectory_pts[0], trajectory_pts[-1]
-            slope_m = (x_top - x_bot) / self.px_per_meter
+        # Centro vs inferior (no superior vs inferior) — igual que lane_detector.py,
+        # para no anticipar la curva demasiado pronto con el punto lejano.
+        x_mid = band_points[1][2]
+        x_bot = band_points[2][2]
+        if x_mid is not None and x_bot is not None:
+            slope_m = (x_mid - x_bot) / self.px_per_meter
         else:
             slope_m = float('nan')
 

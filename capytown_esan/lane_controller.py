@@ -383,13 +383,13 @@ class LaneController(Node):
         I  = self.ki * self.integral
         D  = self.kd * (e - self.last_error) / dt if not stale else 0.0
 
-        # Anticipación de curva: el punto de la banda SUPERIOR (más lejos) se
-        # desvía del inferior antes de que el robot mismo tenga que girar
-        # fuerte — eso es la pendiente (slope) de la línea guía, una lectura
-        # del frame actual, sin retraso. Usar `trend` aquí sería tardío: se
-        # calcula acumulando varias muestras de error en el tiempo (~0.5s de
-        # ventana), así que la corrección llegaba tarde aunque la detección
-        # de curva ya fuera inmediata. Por eso el FF usa slope directamente.
+        # Anticipación de curva: pendiente entre el punto CENTRAL e INFERIOR de
+        # la línea guía (no superior-inferior — el punto lejano anticipaba el
+        # giro demasiado pronto). Es una lectura del frame actual, sin retraso.
+        # Usar `trend` aquí sería tardío: se calcula acumulando varias muestras
+        # de error en el tiempo (~0.5s de ventana), así que la corrección
+        # llegaba tarde aunque la detección de curva ya fuera inmediata. Por
+        # eso el FF usa slope directamente.
         anticipa_curva = abs(self.slope) > self.slope_curve_threshold
         FF = self.kff * self.slope if anticipa_curva else 0.0
 
