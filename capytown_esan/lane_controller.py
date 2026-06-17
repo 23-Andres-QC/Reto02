@@ -52,7 +52,7 @@ class LaneController(Node):
             ('kff',             0.6),
             ('linear_speed',    0.30),   # requisito de competencia ≥ 0.2 m/s, con margen
             ('max_angular',     2.0),
-            ('calib_w',         0.20),
+            ('calib_w',         0.15),   # rad/s — antes 0.20, muy brusco al inicio
             ('integral_limit',  0.5),
             ('error_timeout',   0.5),    # sin amarillo NI blanco por más de esto → frena
             ('control_rate',    30.0),
@@ -63,13 +63,13 @@ class LaneController(Node):
             ('yaw_weight',      0.3),    # peso del rumbo planeado (yaw inicial) en avance normal
             ('calib_tolerance', 0.025),  # m — error máximo para considerar "calibrado"
             ('calib_stable_frames', 8),  # frames consecutivos centrado+quieto para confirmar calibración
-            ('calib_kp',        2.0),    # ganancia angular durante calibración inicial (sin avanzar)
+            ('calib_kp',        1.4),    # ganancia angular durante calibración inicial (antes 2.0, brusco)
             ('slope_tolerance', 0.03),   # m — pendiente máx. de la línea guía para considerar "recto"
-            ('calib_kp_slope',  2.0),    # ganancia angular sobre la pendiente durante calibración
+            ('calib_kp_slope',  1.4),    # ganancia angular sobre la pendiente durante calibración (antes 2.0)
             ('calib_min_w',     0.12),   # rad/s — piso mínimo para superar zona muerta del motor
             ('curve_speed_factor', 0.6), # reduce velocidad lineal 40% siempre
             ('slope_curve_threshold', 0.04),  # m — pendiente mínima para anticipar curva (predictivo)
-            ('sharp_turn_slope_threshold', 0.09),  # m — pendiente que indica esquina ~90° real
+            ('sharp_turn_slope_threshold', 0.13),  # m — pendiente que indica esquina ~90° real (antes 0.09, muy temprano)
             ('sharp_turn_w',          0.40),   # rad/s — giro base dedicado en la esquina
             ('sharp_turn_kp_e',       2.5),    # ganancia sobre el error lateral — cierra el giro
             ('sharp_turn_max_w',      0.80),   # rad/s — tope del giro de esquina (base + corrección)

@@ -61,12 +61,13 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
    slope = pendiente del amarillo (banda central vs inferior, /lane_slope) — 0 = recta,
            distinto de 0 = el robot está angulado respecto a la pista aunque
            el centrado promedio ya esté bien
-   w = -(calib_kp * e + calib_kp_slope * slope)
+   w = -(calib_kp * e + calib_kp_slope * slope)   (calib_kp=1.4, calib_kp_slope=1.4 —
+   antes 2.0/2.0, causaba una corrección muy brusca que se iba de largo hacia la derecha)
    Si hace falta corregir pero |w| < calib_min_w (0.12 rad/s), se sube a ese
    piso mínimo conservando el signo — un comando muy chico puede no superar
    la zona muerta/fricción del motor real y el robot se queda sin moverse
    aunque el controlador sí esté calculando una corrección.
-   limitado a ±calib_w
+   limitado a ±calib_w (0.15 rad/s, antes 0.20 — también contribuía al giro brusco)
    Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (2.5cm)
    Y |slope| < slope_tolerance (3cm)
    durante calib_stable_frames (8 frames ≈0.25s) seguidos — así no solo queda
@@ -90,7 +91,8 @@ esquina real. Se activa un modo dedicado, ANTES de la ley PID normal:
 
 ```
 Dos formas de entrar en in_sharp_turn = True:
-  1. Por MAGNITUD: |slope| > sharp_turn_slope_threshold (9cm)
+  1. Por MAGNITUD: |slope| > sharp_turn_slope_threshold (13cm, antes 9cm — se
+     disparaba 7-10cm antes de tiempo, demasiado temprano para una esquina real)
   2. Por TIEMPO: lleva anticipando (|slope| > slope_curve_threshold, 4cm) de forma
      continua más de max_anticipation_time (0.8s) sin resolver → fuerza el giro
      cerrado igual, aunque la magnitud no haya llegado al umbral de esquina.
