@@ -14,7 +14,16 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/calib_hsv_lab.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lane_controller.py', encoding='utf-8'\\).read\\(\\)\\); print\\('controller OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lane_detector.py', encoding='utf-8'\\).read\\(\\)\\); print\\('detector OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/calib_hsv_lab.py', encoding='utf-8'\\).read\\(\\)\\); print\\('calib OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/calib_hsv_lab.py', encoding='utf-8'\\).read\\(\\)\\); print\\('calib OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lap_recorder.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lap_recorder.py', encoding='utf-8'\\).read\\(\\)\\); print\\('lap_recorder OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lane_detector.py', encoding='utf-8'\\).read\\(\\)\\); print\\('lane_detector OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('setup.py', encoding='utf-8'\\).read\\(\\)\\); print\\('setup OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lap_recorder.py', encoding='utf-8'\\).read\\(\\)\\); print\\('recorder OK'\\)\")",
+      "Bash(git checkout *)",
+      "Bash(git rm *)",
+      "Bash(git reset *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('capytown_esan/lap_plotter.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
