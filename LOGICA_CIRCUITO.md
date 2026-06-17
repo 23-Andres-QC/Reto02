@@ -17,11 +17,13 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
   manchas/reflejos redondeados. Reemplazó el filtro anterior (área + aspecto de bounding-box)
 - Sin amarillo NI blanco → NaN (el controlador frena por completo, ver sección de frenado)
 - **3 bandas horizontales fijas** (superior, central, inferior — cada una 1/3 de la imagen): se mide
-  el centro en cada una y el error final usa el **promedio de las 3** — aprovecha toda la línea
-  visible, no un solo punto
-- Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que el robot intenta
-  minimizar de error para avanzar recto — no es una línea fija, se vuelve a trazar constantemente
-  según dónde esté el amarillo
+  el centro en cada una. El error final (`/lane_error`, lo que usa el controlador como "dónde está
+  el robot") usa **solo la banda INFERIOR** — es la más cercana al robot, la que de verdad indica su
+  posición lateral actual. Las bandas superior y central NO son "dónde está el robot": son la pista
+  más adelante, y solo alimentan la pendiente (`/lane_slope`, ver abajo) para anticipar curvas.
+  (Antes el error promediaba las 3 bandas — mezclaba la posición actual con la guía futura.)
+- Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que se dibuja en
+  el debug — no es una línea fija, se vuelve a trazar constantemente según dónde esté el amarillo
 - También se publica `/lane_slope`: la pendiente del **AMARILLO** (no el centro combinado) entre
   su punto **central** e **inferior** (0 = recta/vertical, distinto de 0 = el robot está angulado
   respecto a la pista). Los giros usan amarillo como referencia porque es la línea más confiable y
@@ -55,32 +57,17 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
 ## Arranque (`lane_controller.py`)
 
 ```
-1. CALIBRACIÓN ACTIVA (no avanza, solo ajusta ángulo):
-   se activa al ver amarillo por primera vez.
-   e     = error promedio (centrado lateral)
-   slope = pendiente del amarillo (banda central vs inferior, /lane_slope) — 0 = recta,
-           distinto de 0 = el robot está angulado respecto a la pista aunque
-           el centrado promedio ya esté bien
-   w = -(calib_kp * e + calib_kp_slope * slope)   (calib_kp=1.4, calib_kp_slope=1.4 —
-   antes 2.0/2.0, causaba una corrección muy brusca que se iba de largo hacia la derecha)
-   Si hace falta corregir pero |w| < calib_min_w (0.12 rad/s), se sube a ese
-   piso mínimo conservando el signo — un comando muy chico puede no superar
-   la zona muerta/fricción del motor real y el robot se queda sin moverse
-   aunque el controlador sí esté calculando una corrección.
-   limitado a ±calib_w (0.15 rad/s, antes 0.20 — también contribuía al giro brusco)
-   Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (2.5cm)
-   Y |slope| < slope_tolerance (3cm)
-   durante calib_stable_frames (8 frames ≈0.25s) seguidos — así no solo queda
-   bien centrado en promedio, sino realmente derecho respecto a la pista.
-   (Valores relajados tras observar en pista real que 1.2cm/15 frames era
-   demasiado estricto: el error oscila por ruido/deriva física y nunca
-   llegaba a juntar suficientes frames seguidos — el robot se quedaba
-   atascado en esta fase sin avanzar nunca.)
+1. ESPERA: al detectar amarillo y/o blanco por primera vez, arranca el
+   cronómetro de start_delay (5s) y se queda quieto (no avanza, no gira
+   en el sitio) — SIN calibración activa. (Antes había una fase de
+   calibración activa que giraba en el sitio ajustando ángulo antes de
+   avanzar; se quitó porque la corrección resultaba muy brusca y sesgaba
+   el giro hacia la derecha. Ahora solo se detecta la pista y se espera.)
 
-2. ESPERA: calibrado → captura calib_bias=e, initial_yaw (IMU),
-   pos_x0,y0 (odom) → espera start_delay (5s) sin moverse.
-
-3. AVANCE: termina la espera → PID normal.
+2. AVANCE: termina la espera (start_delay) → PID normal directo, usando
+   la posición real en la que esté el robot (no hay bias de calibración
+   que restar). initial_yaw (IMU) y pos_x0,y0 (odom) se capturan en este
+   momento, ni bien termina la espera.
 ```
 
 ## Esquina ~90° (track de curvas reales, no continuas)
@@ -124,7 +111,7 @@ Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID norma
 ## Control en avance — una sola ley PID
 
 ```
-e = error - calib_bias  (si |e|<1cm → 0, ruido)
+e = error (banda inferior, ver Detección)  (si |e|<1cm → 0, ruido)
 P = kp*e   I = ki*integral(e), anti-windup   D = kd*(e-e_anterior)/dt
 
 anticipa_curva = |slope| > slope_curve_threshold (4cm)
@@ -165,7 +152,7 @@ age = tiempo desde la última lectura válida (amarillo o blanco)
 
 age <= error_timeout (0.5s)  → PID normal (avanza)
 age > error_timeout          → FRENA por completo: linear.x=0, angular.z=0
-                                 resetea integral, error_history, in_sharp_turn
+                                 resetea integral, in_sharp_turn, anticipation_timer
                                  en cuanto vuelve a detectar, retoma el PID de inmediato
 ```
 
@@ -210,13 +197,15 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
 3. Mientras SÍ detecta color, la corrección siempre es gradual avanzando — nunca "frenar para
    corregir" (eso es distinto de frenar por falta total de color, regla #1)
 4. Centro objetivo: **C=(Y+W)/2** si hay ambos colores; si solo uno, ese color ±11cm hacia el
-   otro lado (amarillo+11cm o blanco-11cm) — nunca el centro de la imagen
+   otro lado (amarillo+11cm o blanco-11cm) — nunca el centro de la imagen. El error de control
+   usa SOLO la banda inferior (la posición actual real), no un promedio de las 3 bandas
 5. Una sola ley de control PID — no ramas con ganancias distintas según error/tendencia
 6. No agregar una ganancia de proximidad CONTINUA (causó zigzag) — la única excepción permitida
    es la zona de seguridad discreta (solo dentro de 25% del carril desde cada línea), que existe
    específicamente para no salirse del carril, no para "ayudar" al centrado general
 7. `self.error` nunca se pisa con `None` en NaN — solo `age` decide el estado
-8. Al arrancar, calibrar activamente (ángulo) antes de la espera — nunca asumir que ya está bien puesto
+8. Al arrancar NO hay calibración activa (no gira en el sitio) — solo espera quieto start_delay
+   y luego avanza con PID directo desde la posición real en la que está el robot
 9. El yaw planeado es un empujón suave, no una línea rígida — se apaga en curvas reales
 10. `lane_width_m` debe ser **0.22** (22cm reales) para que la mitad sea exactamente 11cm — si se
     cambia, el log de separación se recalcula solo (usa `target_cm` derivado, no un número fijo)

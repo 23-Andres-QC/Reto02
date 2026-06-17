@@ -225,14 +225,11 @@ class LaneDetector(Node):
         else:
             slope_m = float('nan')
 
-        # Promedio de los centroides válidos en las 3 bandas — usa toda la
-        # línea visible, no solo un punto, para el cálculo del error.
-        yellow_vals  = [xy for xy, _, _ in band_points if xy is not None]
-        white_vals   = [xw for _, xw, _ in band_points if xw is not None]
-        center_vals  = [c  for _, _, c  in band_points if c  is not None]
-        x_yellow_raw = sum(yellow_vals) / len(yellow_vals) if yellow_vals else None
-        x_white_raw  = sum(white_vals) / len(white_vals) if white_vals else None
-        center_raw   = sum(center_vals) / len(center_vals) if center_vals else None
+        # La posición real del robot la marca la banda INFERIOR (la más
+        # cercana al robot). Las bandas superior y central no son "dónde
+        # está el robot" — son la guía de la pista más adelante, y solo
+        # se usan para la pendiente/anticipación de curva (arriba).
+        x_yellow_raw, x_white_raw, center_raw = band_points[2]
 
         # Filtro EMA — suaviza el centroide antes de usarlo en el cálculo de error
         x_yellow  = self._ema_update('x_yellow_f', x_yellow_raw)
