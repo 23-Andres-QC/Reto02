@@ -40,10 +40,14 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
            distinto de 0 = el robot está angulado respecto a la pista aunque
            el centrado promedio ya esté bien
    w = -(calib_kp * e + calib_kp_slope * slope), limitado a ±calib_w
-   Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (1.2cm)
-   Y |slope| < slope_tolerance (1.5cm)
-   durante calib_stable_frames (15 frames ≈0.5s) seguidos — así no solo queda
+   Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (2.5cm)
+   Y |slope| < slope_tolerance (3cm)
+   durante calib_stable_frames (8 frames ≈0.25s) seguidos — así no solo queda
    bien centrado en promedio, sino realmente derecho respecto a la pista.
+   (Valores relajados tras observar en pista real que 1.2cm/15 frames era
+   demasiado estricto: el error oscila por ruido/deriva física y nunca
+   llegaba a juntar suficientes frames seguidos — el robot se quedaba
+   atascado en esta fase sin avanzar nunca.)
 
 2. ESPERA: calibrado → captura calib_bias=e, initial_yaw (IMU),
    pos_x0,y0 (odom) → espera start_delay (5s) sin moverse.

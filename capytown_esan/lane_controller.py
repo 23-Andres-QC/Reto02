@@ -73,11 +73,11 @@ class LaneController(Node):
             ('imu_topic',       '/imu'),
             ('odom_topic',      '/odom_raw'),
             ('yaw_weight',      0.3),    # peso del rumbo planeado (yaw inicial) en avance normal
-            ('calib_tolerance', 0.012),  # m — error máximo para considerar "calibrado"
-            ('calib_stable_frames', 15), # frames consecutivos centrado+quieto para confirmar calibración
-            ('calib_kp',        1.0),    # ganancia angular suave durante calibración inicial (sin avanzar)
-            ('slope_tolerance', 0.015),  # m — pendiente máx. de la línea guía para considerar "recto"
-            ('calib_kp_slope',  1.5),    # ganancia angular sobre la pendiente durante calibración
+            ('calib_tolerance', 0.025),  # m — error máximo para considerar "calibrado"
+            ('calib_stable_frames', 8),  # frames consecutivos centrado+quieto para confirmar calibración
+            ('calib_kp',        2.0),    # ganancia angular durante calibración inicial (sin avanzar)
+            ('slope_tolerance', 0.03),   # m — pendiente máx. de la línea guía para considerar "recto"
+            ('calib_kp_slope',  2.0),    # ganancia angular sobre la pendiente durante calibración
         ])
 
         gp = self.get_parameter
