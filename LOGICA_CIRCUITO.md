@@ -6,12 +6,17 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 
 ## Detección (`lane_detector.py`)
 
-- **Amarillo (HSV)** = ÚNICA referencia para calcular error/centro. **Blanco (LAB)** se detecta y se
-  muestra en el debug, pero **no interviene en el cálculo** (metía demasiado ruido/error)
-- Centro objetivo = **amarillo + 11cm** siempre (mitad de 22cm de carril) — nunca depende del blanco
+- **Amarillo y Blanco, ambos en HSV** (antes el blanco era LAB; se cambió porque el blanco real
+  tiene baja saturación y alto brillo, más simple y consistente detectarlo así junto al amarillo)
+- Centro del carril por banda: **C=(Y+W)/2** si se detectan ambos colores y la distancia entre
+  ellos es razonable (60%-130% del ancho esperado); si solo hay amarillo, centro = amarillo + 11cm
+  (mitad de 22cm de carril)
+- Filtro de forma: **elongación por PCA** sobre componentes conectados (`_component_filter`),
+  aplicado a ambos colores — más robusto que un bounding-box para distinguir cintas largas de
+  manchas/reflejos redondeados. Reemplazó el filtro anterior (área + aspecto de bounding-box)
 - Sin amarillo → NaN (entra en búsqueda)
 - **3 bandas horizontales fijas** (superior, central, inferior — cada una 1/3 de la imagen): se mide
-  amarillo+11cm en cada una y el error final usa el **promedio de las 3** — aprovecha toda la línea
+  el centro en cada una y el error final usa el **promedio de las 3** — aprovecha toda la línea
   visible, no un solo punto
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que el robot intenta
   minimizar de error para avanzar recto — no es una línea fija, se vuelve a trazar constantemente
@@ -39,7 +44,12 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
    slope = pendiente de la línea guía (top vs bottom, /lane_slope) — 0 = recta,
            distinto de 0 = el robot está angulado respecto a la pista aunque
            el centrado promedio ya esté bien
-   w = -(calib_kp * e + calib_kp_slope * slope), limitado a ±calib_w
+   w = -(calib_kp * e + calib_kp_slope * slope)
+   Si hace falta corregir pero |w| < calib_min_w (0.12 rad/s), se sube a ese
+   piso mínimo conservando el signo — un comando muy chico puede no superar
+   la zona muerta/fricción del motor real y el robot se queda sin moverse
+   aunque el controlador sí esté calculando una corrección.
+   limitado a ±calib_w
    Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (2.5cm)
    Y |slope| < slope_tolerance (3cm)
    durante calib_stable_frames (8 frames ≈0.25s) seguidos — así no solo queda
@@ -95,10 +105,20 @@ age > search_timeout (2.2s)              → búsqueda real: gira izquierda (dri
 
 Acumula ángulo girado en una dirección. Si supera 90° → `in_corner=True` (informativo, no cambia la ley de control).
 
-## Herramienta de calibración (sin mover el robot)
+## Herramienta de calibración HSV offline (no ROS)
+
+`tools/preprocesamiento_lineas_hsv.py` — script standalone (no nodo ROS) para calibrar
+visualmente los rangos HSV de amarillo/blanco a partir de una imagen guardada (captura de
+rqt_image_view o frame de `/image_raw`). Uso: `python3 tools/preprocesamiento_lineas_hsv.py captura.png`.
+Genera 4 imágenes de prueba progresivas (HSV simple → ROI+morfología → componentes filtrados →
+resultado final con Hough + centro) más las máscaras finales. Los rangos HSV de blanco/amarillo
+y el filtro de elongación PCA usados en `lane_detector.py` salieron de experimentar con este script.
+
+## Herramienta de calibración (sin mover el robot, nodo ROS)
 
 `capytown_esan/calib_hsv_lab.py` — réplica exacta de la detección de `lane_detector.py`
-(HSV/LAB, 3 bandas, línea guía, error, separación) pero **nunca publica `/cmd_vel`** y
+(HSV para ambos colores, filtro PCA, 3 bandas, línea guía, error, separación) pero
+**nunca publica `/cmd_vel`** y
 no depende de `lane_controller`. Sirve para mover el robot a mano y ver en consola/debug
 qué calcula en cada posición/ángulo, sin riesgo de que se mueva.
 
@@ -115,7 +135,7 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
 1. Nunca frenar del todo (salvo calibración inicial / espera) — siempre avanza, aunque sea despacio
 2. Pérdida sostenida → buscar izquierda con rampa lenta, nunca salto brusco a velocidad fija
 3. Pérdida breve → usar última lectura congelada, no cambiar de modo
-4. Centro objetivo siempre **amarillo + 11cm**, nunca el centro de la imagen
+4. Centro objetivo: **C=(Y+W)/2** si hay ambos colores, si no, **amarillo + 11cm** — nunca el centro de la imagen
 5. Una sola ley de control PID — no ramas con ganancias distintas según error/tendencia
 6. No duplicar corrección de proximidad al amarillo — el error geométrico ya la incluye
 7. `self.error` nunca se pisa con `None` en NaN — solo `age` decide el estado
