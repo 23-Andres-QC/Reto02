@@ -9,12 +9,13 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 - **Amarillo y Blanco, ambos en HSV** (antes el blanco era LAB; se cambió porque el blanco real
   tiene baja saturación y alto brillo, más simple y consistente detectarlo así junto al amarillo)
 - Centro del carril por banda: **C=(Y+W)/2** si se detectan ambos colores y la distancia entre
-  ellos es razonable (60%-130% del ancho esperado); si solo hay amarillo, centro = amarillo + 11cm
-  (mitad de 22cm de carril)
+  ellos es razonable (60%-130% del ancho esperado); si solo hay uno de los dos, ese color ±11cm
+  hacia el otro lado (amarillo+11cm o blanco-11cm) — mitad de 22cm de carril. El carrito puede
+  avanzar con CUALQUIERA de los dos colores, no solo amarillo
 - Filtro de forma: **elongación por PCA** sobre componentes conectados (`_component_filter`),
   aplicado a ambos colores — más robusto que un bounding-box para distinguir cintas largas de
   manchas/reflejos redondeados. Reemplazó el filtro anterior (área + aspecto de bounding-box)
-- Sin amarillo → NaN (entra en búsqueda)
+- Sin amarillo NI blanco → NaN (el controlador frena por completo, ver sección de frenado)
 - **3 bandas horizontales fijas** (superior, central, inferior — cada una 1/3 de la imagen): se mide
   el centro en cada una y el error final usa el **promedio de las 3** — aprovecha toda la línea
   visible, no un solo punto
@@ -92,11 +93,20 @@ Si |slope| > sharp_turn_slope_threshold (9cm)  → entra en in_sharp_turn = True
 
 Mientras in_sharp_turn:
   dirección = signo de slope (mismo signo que la corrección normal)
-  angular.z = giro lento dedicado (sharp_turn_w = 0.40 rad/s), suavizado (alpha=0.10)
+  w = -(sharp_turn_w * dirección + sharp_turn_kp_e * e), limitado a ±sharp_turn_max_w
+  angular.z = suavizado (alpha=0.10)
   linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
   Sale del giro (in_sharp_turn = False) cuando:
     |slope| < slope_curve_threshold (4cm)  Y  |e| < calib_tolerance (2.5cm)
     → la línea ya está recta y centrada otra vez (la "siguiente" línea tras la esquina)
+
+El giro NO es a un ritmo fijo: se suma una corrección proporcional al error
+lateral ACTUAL (sharp_turn_kp_e * e). Antes, una velocidad angular fija
+generaba un giro de radio constante ("abierto") que no necesariamente
+converge al centro real — si el robot llegaba a la esquina ya desviado, el
+giro fijo no compensaba eso y se acababa saliendo de la línea amarilla en
+vez de seguirla. Con la corrección proporcional, si llega desviado, el giro
+se cierra más para converger hacia el centro de las líneas proyectadas.
 ```
 
 Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID normal
@@ -132,21 +142,27 @@ ya anticipado por la cámara.
 avanzando mientras `angular.z` se ajusta gradualmente hacia la línea de recorrido
 recalculada cada frame. Si se desvía un poco, no se detiene a corregir — simplemente
 avanza con un pequeño sesgo angular hacia donde está la línea guía, hasta volver a
-estar alineado. Nunca cambia a "parar y rotar" (eso solo pasa en pérdida sostenida
-de amarillo, ver sección siguiente).
+estar alineado. La única excepción real es perder TODO color (ver sección siguiente).
 
-## Pérdida de amarillo — dos umbrales (evita zigzag)
+## Sin color (ni amarillo ni blanco): FRENA por completo
+
+Regla simple y explícita: el carrito **solo avanza si detecta amarillo O blanco**
+(cualquiera de los dos, el detector ya hace el fallback correspondiente). Si no
+detecta NINGUNO de los dos colores, frena por completo — no avanza, no gira
+buscando — y se queda quieto hasta volver a detectar cualquiera de los dos.
 
 ```
-age = tiempo desde última lectura válida
+age = tiempo desde la última lectura válida (amarillo o blanco)
 
-age <= error_timeout (0.8s)              → PID normal
-0.8s < age <= search_timeout (2.2s)      → pérdida breve: usa el e CONGELADO,
-                                             sin tocar integral/derivada, sigue recto
-age > search_timeout (2.2s)              → búsqueda real: gira izquierda (drift_w)
-                                             con rampa lenta (alpha=0.06) + corrección
-                                             hacia yaw inicial, avanza al 40%, nunca para
+age <= error_timeout (0.5s)  → PID normal (avanza)
+age > error_timeout          → FRENA por completo: linear.x=0, angular.z=0
+                                 resetea integral, error_history, in_sharp_turn
+                                 en cuanto vuelve a detectar, retoma el PID de inmediato
 ```
+
+Esto reemplazó el sistema anterior (pérdida breve congelada + búsqueda activa girando
+mientras avanzaba) — se simplificó a una regla binaria: hay color → avanza, no hay
+color → frena. No hay modo de "búsqueda" que mueva el robot a ciegas.
 
 ## Esquinas
 
@@ -179,10 +195,13 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
 
 ## Reglas de oro
 
-1. Nunca frenar del todo (salvo calibración inicial / espera) — siempre avanza, aunque sea despacio
-2. Pérdida sostenida → buscar izquierda con rampa lenta, nunca salto brusco a velocidad fija
-3. Pérdida breve → usar última lectura congelada, no cambiar de modo
-4. Centro objetivo: **C=(Y+W)/2** si hay ambos colores, si no, **amarillo + 11cm** — nunca el centro de la imagen
+1. El carrito SOLO avanza si detecta amarillo o blanco — si no detecta ninguno, FRENA por
+   completo (no hay modo de "búsqueda" que mueva el robot a ciegas sin ver ningún color)
+2. En cuanto vuelve a detectar cualquiera de los dos colores, retoma el PID normal de inmediato
+3. Mientras SÍ detecta color, la corrección siempre es gradual avanzando — nunca "frenar para
+   corregir" (eso es distinto de frenar por falta total de color, regla #1)
+4. Centro objetivo: **C=(Y+W)/2** si hay ambos colores; si solo uno, ese color ±11cm hacia el
+   otro lado (amarillo+11cm o blanco-11cm) — nunca el centro de la imagen
 5. Una sola ley de control PID — no ramas con ganancias distintas según error/tendencia
 6. No agregar una ganancia de proximidad CONTINUA (causó zigzag) — la única excepción permitida
    es la zona de seguridad discreta (solo dentro de 25% del carril desde cada línea), que existe

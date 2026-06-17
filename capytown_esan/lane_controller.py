@@ -2,26 +2,17 @@
 """CapyTown lane_controller - RC-2.
 
 Secuencia de arranque:
-  1. Detecta amarillo por primera vez → entra en CALIBRACIÓN ACTIVA
+  1. Detecta amarillo y/o blanco por primera vez → entra en CALIBRACIÓN ACTIVA
   2. CALIBRACIÓN ACTIVA: ajustes angulares suaves, SIN avanzar, hasta que
      el error (y su tendencia) estén cerca de cero varios frames seguidos
-     → posición x,y correcta, ángulo recto respecto al amarillo/línea planeada
+     → posición x,y correcta, ángulo recto respecto a la línea/línea planeada
   3. Calibrado → arranca cronómetro de start_delay (5s), sigue sin avanzar
   4. Termina la espera → recién entonces avanza con PID
 
-Una sola ley de control PID continua. Estados según el tiempo sin
-detección válida de amarillo (`age`):
-
-  age <= error_timeout (0.8s)                    → PID normal
-  error_timeout < age <= search_timeout (2.2s)    → pérdida breve: PID con
-                                                      el último error congelado
-                                                      (sin tocar integral/derivada)
-  age > search_timeout                            → búsqueda real: gira
-                                                      izquierda con rampa lenta,
-                                                      corrigiendo hacia el yaw
-                                                      inicial (IMU) para no
-                                                      desviarse del heading
-                                                      original mientras busca
+Regla simple de avance: el carrito SOLO avanza si detecta amarillo O blanco.
+Si no detecta NINGUNO de los dos colores por más de `error_timeout`, FRENA
+por completo (no avanza, no gira buscando) y se queda quieto hasta volver a
+detectar cualquiera de los dos colores — ahí retoma el PID normal de inmediato.
 
 IMU: registra yaw inicial cuando termina la espera de arranque (start_delay).
 
@@ -62,10 +53,8 @@ class LaneController(Node):
             ('linear_speed',    0.30),   # requisito de competencia ≥ 0.2 m/s, con margen
             ('max_angular',     2.0),
             ('calib_w',         0.20),
-            ('drift_w',         0.15),   # rad/s giro suave buscando amarillo
             ('integral_limit',  0.5),
-            ('error_timeout',   0.8),    # pérdida breve: congela última corrección, sigue recto
-            ('search_timeout',  2.2),    # pérdida sostenida: recién aquí entra en búsqueda activa
+            ('error_timeout',   0.5),    # sin amarillo NI blanco por más de esto → frena
             ('control_rate',    30.0),
             ('history_size',    15),
             ('start_delay',     5.0),
@@ -81,7 +70,9 @@ class LaneController(Node):
             ('curve_speed_factor', 0.6), # reduce velocidad lineal 40% siempre
             ('slope_curve_threshold', 0.04),  # m — pendiente mínima para anticipar curva (predictivo)
             ('sharp_turn_slope_threshold', 0.09),  # m — pendiente que indica esquina ~90° real
-            ('sharp_turn_w',          0.40),   # rad/s — giro lento dedicado en la esquina
+            ('sharp_turn_w',          0.40),   # rad/s — giro base dedicado en la esquina
+            ('sharp_turn_kp_e',       2.5),    # ganancia sobre el error lateral — cierra el giro
+            ('sharp_turn_max_w',      0.80),   # rad/s — tope del giro de esquina (base + corrección)
             ('sharp_turn_speed_factor', 0.3),  # avance muy reducido mientras gira en la esquina
         ])
 
@@ -93,10 +84,8 @@ class LaneController(Node):
         self.v           = float(gp('linear_speed').value)
         self.max_w       = float(gp('max_angular').value)
         self.calib_w     = float(gp('calib_w').value)
-        self.drift_w     = float(gp('drift_w').value)
         self.i_limit     = float(gp('integral_limit').value)
         self.timeout     = float(gp('error_timeout').value)
-        self.search_timeout = float(gp('search_timeout').value)
         self.start_delay = float(gp('start_delay').value)
         hist             = int(gp('history_size').value)
         rate             = float(gp('control_rate').value)
@@ -113,6 +102,8 @@ class LaneController(Node):
         self.slope_curve_threshold = float(gp('slope_curve_threshold').value)
         self.sharp_turn_slope_threshold = float(gp('sharp_turn_slope_threshold').value)
         self.sharp_turn_w               = float(gp('sharp_turn_w').value)
+        self.sharp_turn_kp_e            = float(gp('sharp_turn_kp_e').value)
+        self.sharp_turn_max_w           = float(gp('sharp_turn_max_w').value)
         self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
 
         self.error         = None
@@ -165,7 +156,7 @@ class LaneController(Node):
 
         self.get_logger().info(
             f'lane_controller — v={self.v:.3f} calib_w={self.calib_w:.2f} '
-            f'drift_w={self.drift_w:.2f} kp={self.kp}')
+            f'kp={self.kp} error_timeout={self.timeout:.2f}s (sin color → frena)')
 
     # ------------------------------------------------------------------
     def on_imu(self, msg):
@@ -198,16 +189,18 @@ class LaneController(Node):
             f'Posición robot: x={rel_x:+.3f}m y={rel_y:+.3f}m yaw={yaw_deg:.1f}°')
 
     def on_error(self, msg):
-        # OJO: solo actualizamos self.error con lecturas válidas.
-        # Si llega NaN, NO lo pisamos — así "age" (tiempo desde la última
-        # lectura válida) es la única señal que decide modo búsqueda,
-        # y self.error nunca queda en None mientras age <= timeout.
+        # OJO: solo actualizamos self.error con lecturas válidas (amarillo
+        # y/o blanco detectado — el detector ya hace el fallback solo-amarillo
+        # o solo-blanco). Si llega NaN (sin ningún color), NO lo pisamos —
+        # así "age" (tiempo desde la última lectura válida) es la única
+        # señal que decide si frenar, y self.error nunca queda en None
+        # mientras age <= timeout.
         if not math.isnan(msg.data):
             self.error   = msg.data
             self.last_rx = self.get_clock().now()
             if not self.initialized:
                 self.initialized = True
-                self.get_logger().info('Amarillo detectado — calibrando posición inicial...')
+                self.get_logger().info('Color detectado — calibrando posición inicial...')
 
     def on_slope(self, msg):
         # Pendiente del amarillo (banda central vs inferior). Si llega NaN
@@ -325,29 +318,18 @@ class LaneController(Node):
         age = (now - self.last_rx).nanoseconds * 1e-9
         cmd = Twist()
 
-        # ── PÉRDIDA SOSTENIDA (> search_timeout): recién aquí búsqueda activa ──
-        # Esto es la curva genuina / fuera de pista real. Rampa MUY lenta
-        # (alpha bajo) para no generar un giro brusco que cambie la posición.
-        if age > self.search_timeout:
+        # ── SIN COLOR (ni amarillo ni blanco): FRENA ─────────────────────
+        # El carrito solo avanza si detecta amarillo O blanco. Si no detecta
+        # ninguno de los dos colores, frena por completo (no avanza, no gira
+        # buscando) y se queda quieto hasta que vuelva a detectar algo.
+        if age > self.timeout:
             self.integral = 0.0
             self.error_history.clear()
-            # Corrección hacia el yaw inicial mientras busca, para no
-            # desviarse del heading original durante la búsqueda
-            yaw_corr = self._yaw_correction()
-            w_target = self.drift_w + yaw_corr
-            w_target = max(-self.calib_w, min(self.calib_w, w_target))
-            cmd.angular.z = self._smooth(w_target, alpha=0.06)
-            cmd.linear.x  = self.v * 0.4
-            self.pub.publish(cmd)
-            self._track_corner(cmd.angular.z, dt)
+            self.smooth_w = 0.0
+            self.in_sharp_turn = False
+            self.pub.publish(Twist())   # frena: linear=0, angular=0
+            self._track_corner(0.0, dt)
             return
-
-        # ── PÉRDIDA BREVE (timeout < age <= search_timeout): NO cambia de modo ──
-        # Se sigue usando la última lectura válida conocida (self.error, congelada)
-        # en la misma ley PID. Esto evita el salto que generaba el zigzag:
-        # antes, perder el amarillo un instante disparaba un giro fijo que
-        # cambiaba la posición real del robot y generaba el error opuesto.
-        stale = age > self.timeout
 
         e = self.error - self.calib_bias   # corrige contra el bias capturado al inicio
         if abs(e) < 0.01:
@@ -364,24 +346,33 @@ class LaneController(Node):
             self.in_sharp_turn = True
 
         if self.in_sharp_turn:
+            # El giro NO es a un ritmo fijo (eso generaba un giro de radio
+            # constante — "abierto" — que no necesariamente converge al
+            # centro real, perdiendo el amarillo en vez de seguirlo). Se
+            # suma una corrección proporcional al error lateral ACTUAL: si
+            # llega a la esquina desviado, cierra más el giro para converger
+            # hacia el centro de las líneas proyectadas, no solo gira en
+            # blanco. Mismo signo que la corrección normal (-(...)).
             turn_dir = math.copysign(1.0, self.slope) if self.slope != 0.0 else 1.0
-            w_target = -turn_dir * self.sharp_turn_w   # mismo signo que la corrección normal
+            w_target = -(turn_dir * self.sharp_turn_w + self.sharp_turn_kp_e * e)
+            w_target = max(-self.sharp_turn_max_w, min(self.sharp_turn_max_w, w_target))
             cmd.angular.z = self._smooth(w_target, alpha=0.10)
             cmd.linear.x  = self.v * self.sharp_turn_speed_factor
             self.pub.publish(cmd)
             self._track_corner(cmd.angular.z, dt)
             # Salir del giro: línea ya recta (slope bajo) y centrada (e bajo)
+            # — es decir, ya llegó al centro de la proyección de las líneas
+            # nuevas, no solo "se ve recta" por casualidad de ángulo.
             if abs(self.slope) < self.slope_curve_threshold and abs(e) < self.calib_tolerance:
                 self.in_sharp_turn = False
             return
 
         # ── AVANCE con PID — una sola ley de control, sin saltos de modo ──
         P = self.kp * e
-        if not stale:
-            self.integral += e * dt
-            self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
+        self.integral += e * dt
+        self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))
         I  = self.ki * self.integral
-        D  = self.kd * (e - self.last_error) / dt if not stale else 0.0
+        D  = self.kd * (e - self.last_error) / dt
 
         # Anticipación de curva: pendiente entre el punto CENTRAL e INFERIOR de
         # la línea guía (no superior-inferior — el punto lejano anticipaba el
@@ -412,8 +403,7 @@ class LaneController(Node):
 
         self._track_corner(cmd.angular.z, dt)
 
-        if not stale:
-            self.last_error = e
+        self.last_error = e
 
 
 def main(args=None):

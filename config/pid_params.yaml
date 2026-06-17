@@ -10,12 +10,10 @@ lane_controller:
 
     max_angular: 2.0
     integral_limit: 0.5
-    error_timeout: 0.8
+    error_timeout: 0.5   # sin amarillo NI blanco por más de esto → frena por completo
     control_rate: 30.0
 
-    calib_w: 0.20        # rad/s — límite máximo angular en búsqueda
-    drift_w: 0.15        # rad/s — giro suave buscando amarillo (solo tras search_timeout)
-    search_timeout: 2.2  # s — pérdida sostenida antes de activar búsqueda real
+    calib_w: 0.20        # rad/s — límite máximo angular durante calibración inicial
 
     history_size: 15
     start_delay: 5.0
@@ -33,5 +31,7 @@ lane_controller:
     slope_curve_threshold: 0.04   # m — pendiente mínima para anticipar curva (predictivo, vía cámara)
 
     sharp_turn_slope_threshold: 0.09  # m — pendiente que indica esquina ~90° real (no curva suave)
-    sharp_turn_w: 0.40                # rad/s — giro lento dedicado en la esquina
+    sharp_turn_w: 0.40                # rad/s — giro base dedicado en la esquina
+    sharp_turn_kp_e: 2.5              # ganancia sobre el error lateral — cierra el giro hacia el centro
+    sharp_turn_max_w: 0.80            # rad/s — tope del giro (base + corrección)
     sharp_turn_speed_factor: 0.3      # avance muy reducido mientras gira en la esquina

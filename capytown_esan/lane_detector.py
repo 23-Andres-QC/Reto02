@@ -192,7 +192,9 @@ class LaneDetector(Node):
 
         def _band_center(sl):
             """Centro del carril en una banda: C=(Y+W)/2 si hay ambos colores
-            y la distancia es razonable, si no, amarillo + 11cm."""
+            y la distancia es razonable; si solo hay uno de los dos, ese
+            color + 11cm (amarillo) o - 11cm (blanco) hacia el otro lado.
+            El carrito puede avanzar con CUALQUIERA de los dos colores."""
             xy = self._centroid_x(mask_yellow[sl, :])
             xw = self._centroid_x(mask_white[sl, :])
             if xy is not None and xw is not None:
@@ -203,6 +205,8 @@ class LaneDetector(Node):
                 return xy, xw, (xy + xw) / 2.0
             elif xy is not None:
                 return xy, None, xy + lane_width_px / 2.0
+            elif xw is not None:
+                return None, xw, xw - lane_width_px / 2.0
             return None, None, None
 
         band_points    = [_band_center(sl) for sl in band_slices]  # [(xy,xw,xc), ...]
@@ -293,8 +297,12 @@ class LaneDetector(Node):
                 f'Robot(centro)={w/2:.0f}px  Amarillo={x_yellow:.0f}px  '
                 f'separación={separacion_cm:.1f}cm  error={error_sep_cm:+.1f}cm  → {estado}',
                 throttle_duration_sec=0.5)
+        elif x_white is not None:
+            self.get_logger().info(
+                f'Sin amarillo, usando BLANCO={x_white:.0f}px como referencia',
+                throttle_duration_sec=0.5)
         else:
-            self.get_logger().info('Sin amarillo detectado', throttle_duration_sec=0.5)
+            self.get_logger().info('Sin amarillo ni blanco detectado — frena', throttle_duration_sec=0.5)
 
         out      = Float32()
         out.data = float(error_m)

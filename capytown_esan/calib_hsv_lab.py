@@ -199,6 +199,8 @@ class CalibHsvLab(Node):
                 return xy, xw, (xy + xw) / 2.0
             elif xy is not None:
                 return xy, None, xy + lane_width_px / 2.0
+            elif xw is not None:
+                return None, xw, xw - lane_width_px / 2.0
             return None, None, None
 
         band_points    = [band_center(sl) for sl in band_slices]
