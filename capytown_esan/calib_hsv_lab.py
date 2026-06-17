@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Calibración visual HSV/LAB — RC-2.
+"""Calibración visual HSV — RC-2.
 
 Hace EXACTAMENTE los mismos cálculos que lane_detector.py (IPM, detección
-de amarillo HSV / blanco LAB, 3 bandas, línea guía, error, separación,
-yaw/posición vía IMU/odometría) pero:
+de amarillo/blanco en HSV, filtro de elongación PCA, 3 bandas, línea guía,
+error, separación, yaw/posición vía IMU/odometría) pero:
 
   - NUNCA publica en /cmd_vel (no mueve el robot, ni falta que lo intente)
   - NO depende de lane_controller — se corre solo
   - Imprime todo en consola para que muevas el robot A MANO y veas qué
     calcula en cada posición/ángulo distinto
 
-Usar para calibrar HSV/LAB y verificar visualmente la línea guía sin
+Usar para calibrar HSV y verificar visualmente la línea guía sin
 arriesgar que el robot se mueva.
 """
 
@@ -38,14 +38,14 @@ class CalibHsvLab(Node):
         self.bridge = CvBridge()
 
         self.declare_parameters('', [
-            ('white_l_min', 80), ('white_l_max', 255),
-            ('white_a_min', 85), ('white_a_max', 170),
-            ('white_b_min', 85), ('white_b_max', 170),
-            ('white_min_aspect', 1.8), ('white_max_area', 4500),
-            ('yellow_h_min', 15), ('yellow_h_max', 40),
-            ('yellow_s_min', 60), ('yellow_s_max', 255),
+            ('white_h_min', 0),   ('white_h_max', 180),
+            ('white_s_min', 0),   ('white_s_max', 65),
+            ('white_v_min', 170), ('white_v_max', 255),
+            ('white_min_elong', 5.0), ('white_min_area', 1000), ('white_max_area', 8000),
+            ('yellow_h_min', 15), ('yellow_h_max', 45),
+            ('yellow_s_min', 45), ('yellow_s_max', 255),
             ('yellow_v_min', 80), ('yellow_v_max', 255),
-            ('min_area', 150),
+            ('yellow_min_elong', 8.0), ('yellow_min_area', 500), ('yellow_max_area', 20000),
             ('lane_width_m', 0.22),
             ('px_per_meter', 600.0),
             ('imu_topic', '/imu'),
@@ -53,24 +53,29 @@ class CalibHsvLab(Node):
         ])
 
         gp = self.get_parameter
-        self.white_lo_lab = np.array([gp('white_l_min').value, gp('white_a_min').value,
-                                       gp('white_b_min').value], dtype=np.uint8)
-        self.white_hi_lab = np.array([gp('white_l_max').value, gp('white_a_max').value,
-                                       gp('white_b_max').value], dtype=np.uint8)
-        self.white_min_aspect = float(gp('white_min_aspect').value)
-        self.white_max_area   = float(gp('white_max_area').value)
+        self.white_lo = np.array([gp('white_h_min').value, gp('white_s_min').value,
+                                   gp('white_v_min').value], dtype=np.uint8)
+        self.white_hi = np.array([gp('white_h_max').value, gp('white_s_max').value,
+                                   gp('white_v_max').value], dtype=np.uint8)
+        self.white_min_elong = float(gp('white_min_elong').value)
+        self.white_min_area  = float(gp('white_min_area').value)
+        self.white_max_area  = float(gp('white_max_area').value)
 
         self.yellow_lo = np.array([gp('yellow_h_min').value, gp('yellow_s_min').value,
                                     gp('yellow_v_min').value], dtype=np.uint8)
         self.yellow_hi = np.array([gp('yellow_h_max').value, gp('yellow_s_max').value,
                                     gp('yellow_v_max').value], dtype=np.uint8)
+        self.yellow_min_elong = float(gp('yellow_min_elong').value)
+        self.yellow_min_area  = float(gp('yellow_min_area').value)
+        self.yellow_max_area  = float(gp('yellow_max_area').value)
 
-        self.min_area     = float(gp('min_area').value)
         self.lane_width_m = float(gp('lane_width_m').value)
         self.px_per_meter = float(gp('px_per_meter').value)
 
         self.M, self.warp_size = None, None
         self.x_yellow_f = None
+        self.x_white_f  = None
+        self.x_center_f = None
         self.ema_alpha  = 0.5
 
         self.yaw = None
@@ -88,7 +93,7 @@ class CalibHsvLab(Node):
             'Mueve el robot a mano y observa /calib/debug_image y esta consola.')
         self.get_logger().info(
             f'yellow HSV [{self.yellow_lo}]-[{self.yellow_hi}]  '
-            f'white LAB [{self.white_lo_lab}]-[{self.white_hi_lab}]')
+            f'white HSV [{self.white_lo}]-[{self.white_hi}]')
 
     # ------------------------------------------------------------------
     def on_imu(self, msg):
@@ -111,27 +116,35 @@ class CalibHsvLab(Node):
         self.M = cv2.getPerspectiveTransform(src, dst)
         self.warp_size = (w, h)
 
-    def _filter_line_shape(self, mask):
-        result = np.zeros_like(mask)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < self.min_area or area > self.white_max_area:
+    @staticmethod
+    def _component_filter(mask, min_area, max_area, min_elong):
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        out = np.zeros_like(mask)
+        for i in range(1, num):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < min_area or area > max_area:
                 continue
-            _, _, cw, ch = cv2.boundingRect(cnt)
-            if ch / (cw + 1e-5) >= self.white_min_aspect:
-                cv2.drawContours(result, [cnt], -1, 255, -1)
-        return result
+            ys, xs = np.where(labels == i)
+            if len(xs) < 10:
+                continue
+            pts = np.column_stack((xs, ys)).astype(np.float32)
+            _, _, eigval = cv2.PCACompute2(pts, mean=None)
+            elong = float(eigval[0, 0] / (eigval[1, 0] + 1e-6))
+            if elong >= min_elong:
+                out[labels == i] = 255
+        return out
 
-    def _ema(self, value):
+    def _ema(self, attr, value):
+        prev = getattr(self, attr)
         if value is None:
-            self.x_yellow_f = None
+            setattr(self, attr, None)
             return None
-        if self.x_yellow_f is None:
-            self.x_yellow_f = value
+        if prev is None:
+            setattr(self, attr, value)
             return value
-        self.x_yellow_f = (1 - self.ema_alpha) * self.x_yellow_f + self.ema_alpha * value
-        return self.x_yellow_f
+        filtered = (1.0 - self.ema_alpha) * prev + self.ema_alpha * value
+        setattr(self, attr, filtered)
+        return filtered
 
     @staticmethod
     def _centroid_x(mask):
@@ -154,18 +167,21 @@ class CalibHsvLab(Node):
         warp = cv2.warpPerspective(frame, self.M, self.warp_size)
 
         hsv = cv2.cvtColor(warp, cv2.COLOR_BGR2HSV)
-        mask_yellow = cv2.inRange(hsv, self.yellow_lo, self.yellow_hi)
+        mask_yellow_raw = cv2.inRange(hsv, self.yellow_lo, self.yellow_hi)
+        mask_white_raw  = cv2.inRange(hsv, self.white_lo, self.white_hi)
 
-        lab = cv2.cvtColor(warp, cv2.COLOR_BGR2LAB)
-        mask_white_raw = cv2.inRange(lab, self.white_lo_lab, self.white_hi_lab)
+        open_k  = np.ones((3, 3), np.uint8)
+        close_k = np.ones((7, 7), np.uint8)
+        mask_yellow_raw = cv2.morphologyEx(mask_yellow_raw, cv2.MORPH_OPEN,  open_k)
+        mask_yellow_raw = cv2.morphologyEx(mask_yellow_raw, cv2.MORPH_CLOSE, close_k)
+        mask_white_raw  = cv2.morphologyEx(mask_white_raw,  cv2.MORPH_OPEN,  open_k)
+        mask_white_raw  = cv2.morphologyEx(mask_white_raw,  cv2.MORPH_CLOSE, close_k)
+        mask_white_raw  = cv2.bitwise_and(mask_white_raw, cv2.bitwise_not(mask_yellow_raw))
 
-        kernel = np.ones((3, 3), np.uint8)
-        mask_yellow    = cv2.morphologyEx(mask_yellow, cv2.MORPH_OPEN, kernel)
-        mask_yellow    = cv2.morphologyEx(mask_yellow, cv2.MORPH_CLOSE, kernel)
-        mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_OPEN, kernel)
-        mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_CLOSE, kernel)
-        mask_white_raw = cv2.bitwise_and(mask_white_raw, cv2.bitwise_not(mask_yellow))
-        mask_white = self._filter_line_shape(mask_white_raw)
+        mask_yellow = self._component_filter(mask_yellow_raw, self.yellow_min_area,
+                                              self.yellow_max_area, self.yellow_min_elong)
+        mask_white  = self._component_filter(mask_white_raw, self.white_min_area,
+                                              self.white_max_area, self.white_min_elong)
 
         # 3 bandas — igual que lane_detector.py
         band_rows   = [h // 6, h // 2, (5 * h) // 6]
@@ -174,12 +190,19 @@ class CalibHsvLab(Node):
 
         def band_center(sl):
             xy = self._centroid_x(mask_yellow[sl, :])
-            if xy is None:
-                return None, None
-            return xy, xy + lane_width_px / 2.0
+            xw = self._centroid_x(mask_white[sl, :])
+            if xy is not None and xw is not None:
+                dist = xw - xy
+                if dist <= 0 or dist < lane_width_px * 0.6 or dist > lane_width_px * 1.3:
+                    xw = None
+            if xy is not None and xw is not None:
+                return xy, xw, (xy + xw) / 2.0
+            elif xy is not None:
+                return xy, None, xy + lane_width_px / 2.0
+            return None, None, None
 
         band_points    = [band_center(sl) for sl in band_slices]
-        trajectory_pts = [(c, r) for (_, c), r in zip(band_points, band_rows) if c is not None]
+        trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
         if len(trajectory_pts) >= 2:
             (x_top, _), (x_bot, _) = trajectory_pts[0], trajectory_pts[-1]
@@ -187,13 +210,18 @@ class CalibHsvLab(Node):
         else:
             slope_m = float('nan')
 
-        yellow_vals  = [xy for xy, _ in band_points if xy is not None]
+        yellow_vals  = [xy for xy, _, _ in band_points if xy is not None]
+        white_vals   = [xw for _, xw, _ in band_points if xw is not None]
+        center_vals  = [c  for _, _, c  in band_points if c  is not None]
         x_yellow_raw = sum(yellow_vals) / len(yellow_vals) if yellow_vals else None
-        x_yellow     = self._ema(x_yellow_raw)
-        x_white      = self._centroid_x(mask_white)   # solo informativo
+        x_white_raw  = sum(white_vals) / len(white_vals) if white_vals else None
+        center_raw   = sum(center_vals) / len(center_vals) if center_vals else None
 
-        center_px = x_yellow + lane_width_px / 2.0 if x_yellow is not None else None
-        error_m   = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
+        x_yellow  = self._ema('x_yellow_f', x_yellow_raw)
+        x_white   = self._ema('x_white_f',  x_white_raw)
+        center_px = self._ema('x_center_f', center_raw)
+
+        error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
         out = Float32()
         out.data = float(error_m)
@@ -213,9 +241,9 @@ class CalibHsvLab(Node):
                       f'separación correcta ({target_cm:.1f}cm)')
             recto = 'RECTA' if (not math.isnan(slope_m) and abs(slope_m) < 0.015) else 'INCLINADA'
             self.get_logger().info(
-                f'[CALIB] Amarillo={x_yellow:.0f}px  separación={separacion_cm:.1f}cm  '
-                f'error={error_sep_cm:+.1f}cm → {estado}  |  pendiente={slope_m*100:+.1f}cm ({recto})  '
-                f'|  yaw={yaw_deg:.1f}°  {pos_txt}  '
+                f'[CALIB] Amarillo={x_yellow:.0f}px  Blanco={"sin detectar" if x_white is None else f"{x_white:.0f}px"}  '
+                f'separación={separacion_cm:.1f}cm  error={error_sep_cm:+.1f}cm → {estado}  |  '
+                f'pendiente={slope_m*100:+.1f}cm ({recto})  |  yaw={yaw_deg:.1f}°  {pos_txt}  '
                 f'|  línea_guía_pts={[f"({int(x)},{int(y)})" for x, y in trajectory_pts]}',
                 throttle_duration_sec=0.3)
         else:

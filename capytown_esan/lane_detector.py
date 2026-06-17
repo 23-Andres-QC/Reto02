@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """CapyTown lane_detector - Semana 11 (RC-2).
 
-Amarillo (izquierda): HSV — ÚNICA referencia para calcular el error/centro.
-Blanco  (derecha):    LAB — se detecta y se muestra en el debug, pero NO
-                       interviene en el cálculo (mete demasiado ruido/error).
+Amarillo (izquierda) y Blanco (derecha): ambos en HSV.
+Centro del carril: C=(Y+W)/2 si se detectan los dos colores (y la distancia
+entre ellos es razonable); si solo hay amarillo, centro = amarillo + 11cm
+(mitad del carril de 22cm).
 
-El robot va siempre a "amarillo + 11cm" (centro real del carril de 22cm).
+Filtro de forma: elongación por PCA sobre componentes conectados (en vez de
+bounding-box alto/ancho) — más robusto para distinguir cintas largas de
+reflejos/manchas redondeadas. Se aplica a ambos colores.
 
 3 bandas horizontales (superior, central, inferior) sobre la imagen: se mide
-el amarillo en cada una y se promedia — usa toda la línea visible, no un
+el centro en cada una y se promedia — usa toda la línea visible, no un
 solo punto. Esos 3 puntos también trazan la línea de recorrido (guía) que
 se recalcula en cada frame, mostrada en magenta en el debug.
 
@@ -34,24 +37,24 @@ class LaneDetector(Node):
         self.bridge = CvBridge()
 
         self.declare_parameters('', [
-            # Blanco - LAB
-            ('white_l_min',      130),
-            ('white_l_max',      255),
-            ('white_a_min',      100),
-            ('white_a_max',      155),
-            ('white_b_min',      100),
-            ('white_b_max',      155),
-            ('white_min_aspect', 1.8),   # altura/ancho mínimo para forma de línea
-            ('white_max_area',   4500),  # rechazar manchas grandes (reflejos)
+            # Blanco - HSV (baja saturación, alto brillo)
+            ('white_h_min', 0),   ('white_h_max', 180),
+            ('white_s_min', 0),   ('white_s_max', 65),
+            ('white_v_min', 170), ('white_v_max', 255),
+            ('white_min_elong',  5.0),   # elongación PCA mínima (línea, no mancha)
+            ('white_min_area',   1000),  # área mínima
+            ('white_max_area',   8000),  # rechazar manchas grandes (reflejos)
             # Amarillo - HSV
             ('yellow_h_min', 15),
-            ('yellow_h_max', 40),
-            ('yellow_s_min', 60),
+            ('yellow_h_max', 45),
+            ('yellow_s_min', 45),
             ('yellow_s_max', 255),
             ('yellow_v_min', 80),
             ('yellow_v_max', 255),
+            ('yellow_min_elong', 8.0),   # elongación PCA mínima
+            ('yellow_min_area',  500),   # área mínima
+            ('yellow_max_area',  20000), # rechazar manchas grandes
             # Geometría
-            ('min_area',        150),
             ('lane_width_m',    0.22),
             ('px_per_meter',    600.0),
             ('publish_debug',   True),
@@ -59,14 +62,15 @@ class LaneDetector(Node):
 
         gp = self.get_parameter
 
-        self.white_lo_lab     = np.array([gp('white_l_min').value,
-                                           gp('white_a_min').value,
-                                           gp('white_b_min').value], dtype=np.uint8)
-        self.white_hi_lab     = np.array([gp('white_l_max').value,
-                                           gp('white_a_max').value,
-                                           gp('white_b_max').value], dtype=np.uint8)
-        self.white_min_aspect = float(gp('white_min_aspect').value)
-        self.white_max_area   = float(gp('white_max_area').value)
+        self.white_lo = np.array([gp('white_h_min').value,
+                                   gp('white_s_min').value,
+                                   gp('white_v_min').value], dtype=np.uint8)
+        self.white_hi = np.array([gp('white_h_max').value,
+                                   gp('white_s_max').value,
+                                   gp('white_v_max').value], dtype=np.uint8)
+        self.white_min_elong = float(gp('white_min_elong').value)
+        self.white_min_area  = float(gp('white_min_area').value)
+        self.white_max_area  = float(gp('white_max_area').value)
 
         self.yellow_lo = np.array([gp('yellow_h_min').value,
                                     gp('yellow_s_min').value,
@@ -74,8 +78,10 @@ class LaneDetector(Node):
         self.yellow_hi = np.array([gp('yellow_h_max').value,
                                     gp('yellow_s_max').value,
                                     gp('yellow_v_max').value], dtype=np.uint8)
+        self.yellow_min_elong = float(gp('yellow_min_elong').value)
+        self.yellow_min_area  = float(gp('yellow_min_area').value)
+        self.yellow_max_area  = float(gp('yellow_max_area').value)
 
-        self.min_area       = float(gp('min_area').value)
         self.lane_width_m   = float(gp('lane_width_m').value)
         self.px_per_meter   = float(gp('px_per_meter').value)
         self.publish_debug  = bool(gp('publish_debug').value)
@@ -87,6 +93,7 @@ class LaneDetector(Node):
         # que de otro modo se amplifica en el término D del PID
         self.x_yellow_f = None
         self.x_white_f  = None
+        self.x_center_f = None
         self.ema_alpha  = 0.5
 
         self.sub     = self.create_subscription(
@@ -103,7 +110,7 @@ class LaneDetector(Node):
         self.get_logger().info('lane_detector listo.')
         self.get_logger().info(
             f'yellow HSV [{self.yellow_lo}] - [{self.yellow_hi}]  '
-            f'white LAB [{self.white_lo_lab}] - [{self.white_hi_lab}]')
+            f'white HSV [{self.white_lo}] - [{self.white_hi}]')
 
     # ------------------------------------------------------------------
     def _init_servo(self):
@@ -147,31 +154,33 @@ class LaneDetector(Node):
 
         warp = cv2.warpPerspective(frame, self.M, self.warp_size)
 
-        # Amarillo: HSV
+        # Amarillo y blanco: ambos en HSV
         hsv         = cv2.cvtColor(warp, cv2.COLOR_BGR2HSV)
-        mask_yellow = cv2.inRange(hsv, self.yellow_lo, self.yellow_hi)
+        mask_yellow_raw = cv2.inRange(hsv, self.yellow_lo, self.yellow_hi)
+        mask_white_raw  = cv2.inRange(hsv, self.white_lo, self.white_hi)
 
-        # Blanco: LAB
-        lab             = cv2.cvtColor(warp, cv2.COLOR_BGR2LAB)
-        mask_white_raw  = cv2.inRange(lab, self.white_lo_lab, self.white_hi_lab)
-
-        kernel = np.ones((3, 3), np.uint8)
-        mask_yellow    = cv2.morphologyEx(mask_yellow,   cv2.MORPH_OPEN,  kernel)
-        mask_yellow    = cv2.morphologyEx(mask_yellow,   cv2.MORPH_CLOSE, kernel)
-        mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_OPEN,  kernel)
-        mask_white_raw = cv2.morphologyEx(mask_white_raw, cv2.MORPH_CLOSE, kernel)
+        open_k  = np.ones((3, 3), np.uint8)
+        close_k = np.ones((7, 7), np.uint8)   # cierre más grande: une cortes en la cinta
+        mask_yellow_raw = cv2.morphologyEx(mask_yellow_raw, cv2.MORPH_OPEN,  open_k)
+        mask_yellow_raw = cv2.morphologyEx(mask_yellow_raw, cv2.MORPH_CLOSE, close_k)
+        mask_white_raw  = cv2.morphologyEx(mask_white_raw,  cv2.MORPH_OPEN,  open_k)
+        mask_white_raw  = cv2.morphologyEx(mask_white_raw,  cv2.MORPH_CLOSE, close_k)
 
         # Excluir píxeles amarillos del blanco
-        mask_white_raw = cv2.bitwise_and(mask_white_raw, cv2.bitwise_not(mask_yellow))
+        mask_white_raw = cv2.bitwise_and(mask_white_raw, cv2.bitwise_not(mask_yellow_raw))
 
-        # Filtrar blanco: solo líneas consecutivas, no manchas grandes
-        mask_white = self._filter_line_shape(mask_white_raw)
+        # Filtro de elongación PCA: conserva solo componentes largas y delgadas
+        # (cintas), rechaza manchas/reflejos redondeados — aplicado a ambos colores
+        mask_yellow = self._component_filter(mask_yellow_raw, self.yellow_min_area,
+                                              self.yellow_max_area, self.yellow_min_elong)
+        mask_white  = self._component_filter(mask_white_raw, self.white_min_area,
+                                              self.white_max_area, self.white_min_elong)
 
-        # SOLO AMARILLO para calibración/error — el blanco se sigue detectando
-        # y mostrando en el debug, pero no se usa en el cálculo (mete demasiado
-        # error/ruido). 3 bandas (superior, central, inferior) sobre la imagen:
-        # se calcula amarillo+11cm en cada una y se traza la línea de recorrido
-        # (guía) que minimiza el error, recalculada en cada frame.
+        # Usa AMBOS colores para calibración/error, con centroide C=(Y+W)/2
+        # cuando hay ambos — igual que en la herramienta de calibración offline.
+        # Si solo hay amarillo, centro = amarillo + 11cm. 3 bandas (superior,
+        # central, inferior): se traza la línea de recorrido (guía) con el
+        # centro de cada banda, recalculada en cada frame.
         band_rows  = [h // 6, h // 2, (5 * h) // 6]   # superior, central, inferior
         band_slices = [
             slice(0, h // 3),
@@ -181,15 +190,23 @@ class LaneDetector(Node):
 
         lane_width_px = self.lane_width_m * self.px_per_meter
 
-        def _band_yellow_center(sl):
-            """Centro del carril (amarillo+11cm) en una banda, usando solo amarillo."""
+        def _band_center(sl):
+            """Centro del carril en una banda: C=(Y+W)/2 si hay ambos colores
+            y la distancia es razonable, si no, amarillo + 11cm."""
             xy = self._centroid_x(mask_yellow[sl, :])
-            if xy is None:
-                return None, None
-            return xy, xy + lane_width_px / 2.0
+            xw = self._centroid_x(mask_white[sl, :])
+            if xy is not None and xw is not None:
+                dist = xw - xy
+                if dist <= 0 or dist < lane_width_px * 0.6 or dist > lane_width_px * 1.3:
+                    xw = None   # blanco fuera de rango esperado → descartar
+            if xy is not None and xw is not None:
+                return xy, xw, (xy + xw) / 2.0
+            elif xy is not None:
+                return xy, None, xy + lane_width_px / 2.0
+            return None, None, None
 
-        band_points    = [_band_yellow_center(sl) for sl in band_slices]  # [(xy,xc), ...]
-        trajectory_pts = [(c, r) for (_, c), r in zip(band_points, band_rows) if c is not None]
+        band_points    = [_band_center(sl) for sl in band_slices]  # [(xy,xw,xc), ...]
+        trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
         # Pendiente de la línea guía (superior vs inferior): si la línea no está
         # vertical, el robot está desalineado angularmente respecto a la pista,
@@ -201,20 +218,19 @@ class LaneDetector(Node):
         else:
             slope_m = float('nan')
 
-        # Promedio de los centroides de amarillo válidos en las 3 bandas — usa
-        # toda la línea visible, no solo un punto, para el cálculo del error.
-        yellow_vals  = [xy for xy, _ in band_points if xy is not None]
+        # Promedio de los centroides válidos en las 3 bandas — usa toda la
+        # línea visible, no solo un punto, para el cálculo del error.
+        yellow_vals  = [xy for xy, _, _ in band_points if xy is not None]
+        white_vals   = [xw for _, xw, _ in band_points if xw is not None]
+        center_vals  = [c  for _, _, c  in band_points if c  is not None]
         x_yellow_raw = sum(yellow_vals) / len(yellow_vals) if yellow_vals else None
-
-        # Blanco: solo se calcula para mostrarlo en el debug, NO se usa en el error
-        x_white_raw = self._centroid_x(mask_white)
+        x_white_raw  = sum(white_vals) / len(white_vals) if white_vals else None
+        center_raw   = sum(center_vals) / len(center_vals) if center_vals else None
 
         # Filtro EMA — suaviza el centroide antes de usarlo en el cálculo de error
-        x_yellow = self._ema_update('x_yellow_f', x_yellow_raw)
-        x_white  = self._ema_update('x_white_f',  x_white_raw)   # solo informativo
-
-        # Centro del carril — siempre amarillo + 11cm (el blanco no interviene)
-        center_px = x_yellow + lane_width_px / 2.0 if x_yellow is not None else None
+        x_yellow  = self._ema_update('x_yellow_f', x_yellow_raw)
+        x_white   = self._ema_update('x_white_f',  x_white_raw)
+        center_px = self._ema_update('x_center_f', center_raw)
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
@@ -253,19 +269,32 @@ class LaneDetector(Node):
                                 x_white, x_yellow, center_px, msg, trajectory_pts)
 
     # ------------------------------------------------------------------
-    def _filter_line_shape(self, mask):
-        """Mantiene contornos con forma de línea (alto/ancho >= min_aspect).
-        Rechaza manchas grandes (reflejos) y pequeñas (ruido)."""
-        result   = np.zeros_like(mask)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < self.min_area or area > self.white_max_area:
+    @staticmethod
+    def _component_filter(mask, min_area, max_area, min_elong):
+        """Conserva solo componentes conectados grandes y alargados (cintas),
+        usando elongación por PCA (relación entre el autovalor mayor y el menor
+        de la nube de puntos del componente) — más robusto que un bounding-box
+        para distinguir líneas largas de manchas/reflejos redondeados."""
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        out = np.zeros_like(mask)
+
+        for i in range(1, num):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < min_area or area > max_area:
                 continue
-            _, _, cw, ch = cv2.boundingRect(cnt)
-            if ch / (cw + 1e-5) >= self.white_min_aspect:
-                cv2.drawContours(result, [cnt], -1, 255, -1)
-        return result
+
+            ys, xs = np.where(labels == i)
+            if len(xs) < 10:
+                continue
+
+            pts = np.column_stack((xs, ys)).astype(np.float32)
+            _, _, eigval = cv2.PCACompute2(pts, mean=None)
+            elong = float(eigval[0, 0] / (eigval[1, 0] + 1e-6))
+
+            if elong >= min_elong:
+                out[labels == i] = 255
+
+        return out
 
     def _ema_update(self, attr, value):
         """Filtro exponencial: suaviza la lectura cruda, resetea si se pierde detección."""
@@ -294,8 +323,8 @@ class LaneDetector(Node):
         # Overlay translúcido sobre la cámara real (bird's-eye), no fondo negro:
         # se ve la pista tal cual la cámara la capta, con las detecciones resaltadas.
         overlay = warp.copy()
-        overlay[mask_white  > 0] = (255, 255, 255)  # blanco detectado (solo informativo)
-        overlay[mask_yellow > 0] = (0, 255, 255)    # amarillo detectado (cyan, encima) — el que se usa
+        overlay[mask_white  > 0] = (255, 255, 255)  # blanco detectado
+        overlay[mask_yellow > 0] = (0, 255, 255)    # amarillo detectado (cyan, encima)
         dbg = cv2.addWeighted(overlay, 0.55, warp, 0.45, 0)
 
         # 3 líneas verdes = las 3 bandas (superior, central, inferior) donde

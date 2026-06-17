@@ -78,6 +78,7 @@ class LaneController(Node):
             ('calib_kp',        2.0),    # ganancia angular durante calibración inicial (sin avanzar)
             ('slope_tolerance', 0.03),   # m — pendiente máx. de la línea guía para considerar "recto"
             ('calib_kp_slope',  2.0),    # ganancia angular sobre la pendiente durante calibración
+            ('calib_min_w',     0.12),   # rad/s — piso mínimo para superar zona muerta del motor
         ])
 
         gp = self.get_parameter
@@ -104,6 +105,7 @@ class LaneController(Node):
         self.calib_kp             = float(gp('calib_kp').value)
         self.slope_tolerance      = float(gp('slope_tolerance').value)
         self.calib_kp_slope       = float(gp('calib_kp_slope').value)
+        self.calib_min_w          = float(gp('calib_min_w').value)
 
         self.error         = None
         self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
@@ -292,6 +294,11 @@ class LaneController(Node):
 
             # Corrige tanto el centrado (e) como la rectitud (slope) de la línea guía
             w_calib = -(self.calib_kp * e + self.calib_kp_slope * slope)
+            # Piso mínimo: si hace falta corregir pero el valor proporcional es muy
+            # chico, el motor real puede no moverse (zona muerta/fricción estática).
+            # Se garantiza una magnitud mínima efectiva, conservando el signo.
+            if abs(w_calib) > 1e-4 and abs(w_calib) < self.calib_min_w:
+                w_calib = math.copysign(self.calib_min_w, w_calib)
             w_calib = max(-self.calib_w, min(self.calib_w, w_calib))
             self.calib_smooth_w = 0.85 * self.calib_smooth_w + 0.15 * w_calib
             cmd = Twist()

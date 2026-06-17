@@ -1,26 +1,29 @@
 lane_detector:
   ros__parameters:
 
-    # Blanco - LAB
-    white_l_min: 80
-    white_l_max: 255
-    white_a_min: 85
-    white_a_max: 170
-    white_b_min: 85
-    white_b_max: 170
-    white_min_aspect: 1.8
-    white_max_area: 4500
+    # Blanco - HSV (baja saturación, alto brillo)
+    white_h_min: 0
+    white_h_max: 180
+    white_s_min: 0
+    white_s_max: 65
+    white_v_min: 170
+    white_v_max: 255
+    white_min_elong: 5.0    # elongación PCA mínima (línea, no mancha)
+    white_min_area: 1000
+    white_max_area: 8000
 
     # Amarillo - HSV
     yellow_h_min: 15
-    yellow_h_max: 40
-    yellow_s_min: 60
+    yellow_h_max: 45
+    yellow_s_min: 45
     yellow_s_max: 255
     yellow_v_min: 80
     yellow_v_max: 255
+    yellow_min_elong: 8.0
+    yellow_min_area: 500
+    yellow_max_area: 20000
 
     # Geometría / IPM
-    min_area: 150
     lane_width_m: 0.22
     px_per_meter: 600.0
     publish_debug: true

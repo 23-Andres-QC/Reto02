@@ -29,3 +29,4 @@ lane_controller:
     calib_kp: 2.0                # ganancia angular durante calibración inicial (antes 1.0, muy lenta)
     slope_tolerance: 0.03       # m — pendiente máxima de la línea guía para considerar "recto" (antes 1.5cm)
     calib_kp_slope: 2.0           # ganancia angular sobre la pendiente durante calibración
+    calib_min_w: 0.12             # rad/s — piso mínimo para superar zona muerta del motor
