@@ -8,8 +8,7 @@ lane_detector:
     white_s_max: 65
     white_v_min: 170
     white_v_max: 255
-    white_min_elong: 5.0    # elongación PCA mínima (línea, no mancha)
-    white_min_area: 1000
+    white_min_elong: 5.0    # elongación PCA mínima (lín
     white_max_area: 8000
 
     # Amarillo - HSV
