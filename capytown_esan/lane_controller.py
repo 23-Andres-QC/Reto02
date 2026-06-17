@@ -33,8 +33,6 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
 
-CORNER_THRESHOLD = math.pi / 2.0   # 90° en rad
-
 
 def quat_to_yaw(q):
     """Quaternion → yaw (rad)."""
@@ -117,12 +115,7 @@ class LaneController(Node):
         self.pos_x0 = None   # origen registrado al iniciar
         self.pos_y0 = None
 
-        # Acumulador esquina (informativo, no cambia la ley de control)
-        self.cum_angle      = 0.0
-        self.last_turn_sign = 0
-        self.in_corner      = False
-
-        # Esquina ~90° real: giro lento dedicado hasta reencontrar línea recta
+        # Esquina real: giro lento dedicado hasta reencontrar línea recta
         self.in_sharp_turn = False
 
         self.sub_err   = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
@@ -188,24 +181,6 @@ class LaneController(Node):
         self.smooth_w = (1.0 - alpha) * self.smooth_w + alpha * target
         return self.smooth_w
 
-    def _track_corner(self, w, dt):
-        if abs(w) < 0.05:
-            self.cum_angle      = 0.0
-            self.last_turn_sign = 0
-            self.in_corner      = False
-            return False
-        sign = 1 if w > 0 else -1
-        if sign != self.last_turn_sign:
-            self.cum_angle      = 0.0
-            self.last_turn_sign = sign
-        self.cum_angle += abs(w) * dt
-        if self.cum_angle >= CORNER_THRESHOLD:
-            self.cum_angle      = 0.0
-            self.last_turn_sign = 0
-            self.in_corner      = True
-            return True
-        return False
-
     # ------------------------------------------------------------------
     def control_loop(self):
         now = self.get_clock().now()
@@ -240,20 +215,24 @@ class LaneController(Node):
             self.in_sharp_turn = False
             self.anticipation_timer = 0.0
             self.pub.publish(Twist())   # frena: linear=0, angular=0
-            self._track_corner(0.0, dt)
             return
 
         e = self.error
         if abs(e) < 0.01:
             e = 0.0
 
-        # ── ESQUINA ~90° (track con curvas de 90°, no continuas) ────────
+        # ── ESQUINA real (la pista tiene esquinas marcadas, no curvas suaves
+        # continuas) ──────────────────────────────────────────────────
         # Si la pendiente crece mucho (la línea se va casi de canto), no es
         # una curva suave a corregir con FF — es una esquina real. Entra en
         # un giro lento y dedicado en la dirección de la pendiente, y se
         # mantiene girando hasta volver a ver la línea recta y centrada
         # (la "siguiente" línea amarilla/blanca tras la esquina) — ahí frena
-        # el giro y vuelve al PID normal.
+        # el giro y vuelve al PID normal. NO gira un ángulo fijo (ni 90° ni
+        # ningún otro): gira lo que haga falta, frame a frame, hasta volver
+        # a encontrar el centro al otro lado — la duración del giro la decide
+        # únicamente la condición de salida (slope+e bajos), nunca un ángulo
+        # acumulado.
         #
         # Además del umbral por MAGNITUD (sharp_turn_slope_threshold), hay un
         # umbral por TIEMPO: si lleva "anticipando" (|slope| > slope_curve_
@@ -289,7 +268,6 @@ class LaneController(Node):
             cmd.angular.z = self._smooth(w_target, alpha=0.10)
             cmd.linear.x  = self.v * self.sharp_turn_speed_factor
             self.pub.publish(cmd)
-            self._track_corner(cmd.angular.z, dt)
             # Salir del giro: línea ya recta (slope bajo) y centrada (e bajo)
             # — es decir, ya llegó al centro de la proyección de las líneas
             # nuevas, no solo "se ve recta" por casualidad de ángulo.
@@ -324,14 +302,11 @@ class LaneController(Node):
         w_pid = -(P + I + D + FF)
         w_pid = max(-self.max_w, min(self.max_w, w_pid))
 
-        self.in_corner = False   # si sigue viendo amarillo, ya salió de la curva
         # Velocidad reducida 40% siempre (no solo en curvas) — margen de
         # reacción y corrección más cómodo en todo el recorrido.
         cmd.linear.x   = self.v * self.curve_speed_factor
         cmd.angular.z  = self._smooth(w_pid, alpha=0.12)   # transición lenta — calibración gradual
         self.pub.publish(cmd)
-
-        self._track_corner(cmd.angular.z, dt)
 
         self.last_error = e
 

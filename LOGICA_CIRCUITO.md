@@ -71,11 +71,18 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
    NO en la ley de control (ver "Sin término de rumbo fijo" más abajo).
 ```
 
-## Esquina ~90° (track de curvas reales, no continuas)
+## Esquina real (track con esquinas marcadas, no curvas suaves continuas)
 
-La pista tiene esquinas de ~90°, no curvas suaves continuas. Si la pendiente crece
-mucho (la línea se va casi de canto), no es algo para corregir con FF — es una
-esquina real. Se activa un modo dedicado, ANTES de la ley PID normal:
+La pista tiene esquinas marcadas (en la práctica, cercanas a 90°), no curvas suaves
+continuas. Si la pendiente crece mucho (la línea se va casi de canto), no es algo
+para corregir con FF — es una esquina real. Se activa un modo dedicado, ANTES de la
+ley PID normal. **Importante: el giro NUNCA es por un ángulo fijo (ni 90° ni ningún
+otro acumulado)** — gira frame a frame lo que la pendiente actual indique, y la
+ÚNICA condición que decide cuándo dejar de girar es volver a encontrar el centro
+(slope y error bajos) al otro lado de la esquina, sin importar cuántos grados haya
+girado realmente para lograrlo. (Antes existía un acumulador de ángulo girado,
+`_track_corner`/`CORNER_THRESHOLD`, puramente informativo — no afectaba la ley de
+control, pero sugería un modelo de "giro de 90°" que no es real; se eliminó.)
 
 ```
 Dos formas de entrar en in_sharp_turn = True:
@@ -165,10 +172,6 @@ Esto reemplazó el sistema anterior (pérdida breve congelada + búsqueda activa
 mientras avanzaba) — se simplificó a una regla binaria: hay color → avanza, no hay
 color → frena. No hay modo de "búsqueda" que mueva el robot a ciegas.
 
-## Esquinas
-
-Acumula ángulo girado en una dirección. Si supera 90° → `in_corner=True` (informativo, no cambia la ley de control).
-
 ## Herramienta de calibración HSV offline (no ROS)
 
 `tools/preprocesamiento_lineas_hsv.py` — script standalone (no nodo ROS) para calibrar
@@ -217,9 +220,13 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
    (e, slope); la IMU solo se usa para diagnóstico/log
 10. `lane_width_m` debe ser **0.22** (22cm reales) para que la mitad sea exactamente 11cm — si se
     cambia, el log de separación se recalcula solo (usa `target_cm` derivado, no un número fijo)
-11. La pista tiene esquinas ~90° reales, no curvas suaves continuas — por eso existen dos umbrales
-    de `slope` distintos: uno para anticipar (FF, suave) y otro mayor para esquina real (giro
-    lento dedicado, `in_sharp_turn`) — no confundirlos ni unificarlos en uno solo
+11. La pista tiene esquinas reales (en la práctica, cercanas a 90°), no curvas suaves continuas —
+    por eso existen dos umbrales de `slope` distintos: uno para anticipar (FF, suave) y otro mayor
+    para esquina real (giro lento dedicado, `in_sharp_turn`) — no confundirlos ni unificarlos en uno solo
 12. El giro de esquina (`in_sharp_turn`) no usa una tasa angular fija/preprogramada — se deriva
     proporcionalmente de la pendiente ACTUAL del amarillo (`sharp_turn_kp_slope * slope`), igual
     que el resto del control: todo viene de lo que la cámara ve en el frame actual
+13. El giro de esquina NUNCA se detiene por haber girado un ángulo fijo (ni 90° ni ningún otro
+    acumulado) — la única condición de salida es volver a encontrar el centro (slope y error
+    bajos) al otro lado. No reintroducir ningún acumulador de ángulo girado para decidir cuándo
+    parar de girar
