@@ -74,6 +74,7 @@ class LaneController(Node):
             ('sharp_turn_kp_e',       2.5),    # ganancia sobre el error lateral — cierra el giro
             ('sharp_turn_max_w',      0.80),   # rad/s — tope del giro de esquina (base + corrección)
             ('sharp_turn_speed_factor', 0.3),  # avance muy reducido mientras gira en la esquina
+            ('max_anticipation_time', 0.8),    # s — tope de tiempo anticipando antes de forzar el giro cerrado
         ])
 
         gp = self.get_parameter
@@ -105,6 +106,7 @@ class LaneController(Node):
         self.sharp_turn_kp_e            = float(gp('sharp_turn_kp_e').value)
         self.sharp_turn_max_w           = float(gp('sharp_turn_max_w').value)
         self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
+        self.max_anticipation_time      = float(gp('max_anticipation_time').value)
 
         self.error         = None
         self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
@@ -116,6 +118,7 @@ class LaneController(Node):
         self.last_stamp    = self.get_clock().now()
         self.last_rx       = self.get_clock().now()
         self.error_history = deque(maxlen=hist)
+        self.anticipation_timer = 0.0   # tiempo acumulado anticipando una curva sin resolver
 
         # IMU — yaw
         self.yaw         = None
@@ -327,6 +330,7 @@ class LaneController(Node):
             self.error_history.clear()
             self.smooth_w = 0.0
             self.in_sharp_turn = False
+            self.anticipation_timer = 0.0
             self.pub.publish(Twist())   # frena: linear=0, angular=0
             self._track_corner(0.0, dt)
             return
@@ -342,8 +346,24 @@ class LaneController(Node):
         # mantiene girando hasta volver a ver la línea recta y centrada
         # (la "siguiente" línea amarilla/blanca tras la esquina) — ahí frena
         # el giro y vuelve al PID normal.
-        if abs(self.slope) > self.sharp_turn_slope_threshold:
+        #
+        # Además del umbral por MAGNITUD (sharp_turn_slope_threshold), hay un
+        # umbral por TIEMPO: si lleva "anticipando" (|slope| > slope_curve_
+        # threshold, corrección FF suave) más de max_anticipation_time
+        # seguido sin resolver, se fuerza el giro cerrado de todas formas —
+        # antes se quedaba anticipando con el FF suave hasta 2s antes de
+        # comprometerse al giro real, lo cual se sentía como un giro
+        # adelantado/abierto. Esto limita esa ventana de anticipación.
+        anticipating_now = abs(self.slope) > self.slope_curve_threshold
+        if anticipating_now:
+            self.anticipation_timer += dt
+        else:
+            self.anticipation_timer = 0.0
+
+        if (abs(self.slope) > self.sharp_turn_slope_threshold
+                or self.anticipation_timer > self.max_anticipation_time):
             self.in_sharp_turn = True
+            self.anticipation_timer = 0.0   # ya se comprometió al giro, no sigue acumulando
 
         if self.in_sharp_turn:
             # El giro NO es a un ritmo fijo (eso generaba un giro de radio

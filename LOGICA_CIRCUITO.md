@@ -89,7 +89,14 @@ mucho (la línea se va casi de canto), no es algo para corregir con FF — es un
 esquina real. Se activa un modo dedicado, ANTES de la ley PID normal:
 
 ```
-Si |slope| > sharp_turn_slope_threshold (9cm)  → entra en in_sharp_turn = True
+Dos formas de entrar en in_sharp_turn = True:
+  1. Por MAGNITUD: |slope| > sharp_turn_slope_threshold (9cm)
+  2. Por TIEMPO: lleva anticipando (|slope| > slope_curve_threshold, 4cm) de forma
+     continua más de max_anticipation_time (0.8s) sin resolver → fuerza el giro
+     cerrado igual, aunque la magnitud no haya llegado al umbral de esquina.
+     (Antes el robot podía quedarse anticipando con el FF suave hasta ~2s antes
+     de comprometerse al giro real — se sentía como un giro adelantado/abierto.
+     Este tope de tiempo limita esa ventana.)
 
 Mientras in_sharp_turn:
   dirección = signo de slope (mismo signo que la corrección normal)
