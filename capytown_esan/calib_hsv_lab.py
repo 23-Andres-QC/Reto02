@@ -181,6 +181,12 @@ class CalibHsvLab(Node):
         band_points    = [band_center(sl) for sl in band_slices]
         trajectory_pts = [(c, r) for (_, c), r in zip(band_points, band_rows) if c is not None]
 
+        if len(trajectory_pts) >= 2:
+            (x_top, _), (x_bot, _) = trajectory_pts[0], trajectory_pts[-1]
+            slope_m = (x_top - x_bot) / self.px_per_meter
+        else:
+            slope_m = float('nan')
+
         yellow_vals  = [xy for xy, _ in band_points if xy is not None]
         x_yellow_raw = sum(yellow_vals) / len(yellow_vals) if yellow_vals else None
         x_yellow     = self._ema(x_yellow_raw)
@@ -205,9 +211,11 @@ class CalibHsvLab(Node):
             estado = ('se ACERCA al amarillo' if error_sep_cm < -0.3 else
                       'se ALEJA del amarillo' if error_sep_cm > 0.3 else
                       f'separación correcta ({target_cm:.1f}cm)')
+            recto = 'RECTA' if (not math.isnan(slope_m) and abs(slope_m) < 0.015) else 'INCLINADA'
             self.get_logger().info(
                 f'[CALIB] Amarillo={x_yellow:.0f}px  separación={separacion_cm:.1f}cm  '
-                f'error={error_sep_cm:+.1f}cm → {estado}  |  yaw={yaw_deg:.1f}°  {pos_txt}  '
+                f'error={error_sep_cm:+.1f}cm → {estado}  |  pendiente={slope_m*100:+.1f}cm ({recto})  '
+                f'|  yaw={yaw_deg:.1f}°  {pos_txt}  '
                 f'|  línea_guía_pts={[f"({int(x)},{int(y)})" for x, y in trajectory_pts]}',
                 throttle_duration_sec=0.3)
         else:

@@ -76,6 +76,8 @@ class LaneController(Node):
             ('calib_tolerance', 0.012),  # m — error máximo para considerar "calibrado"
             ('calib_stable_frames', 15), # frames consecutivos centrado+quieto para confirmar calibración
             ('calib_kp',        1.0),    # ganancia angular suave durante calibración inicial (sin avanzar)
+            ('slope_tolerance', 0.015),  # m — pendiente máx. de la línea guía para considerar "recto"
+            ('calib_kp_slope',  1.5),    # ganancia angular sobre la pendiente durante calibración
         ])
 
         gp = self.get_parameter
@@ -100,8 +102,11 @@ class LaneController(Node):
         self.calib_tolerance     = float(gp('calib_tolerance').value)
         self.calib_stable_frames = int(gp('calib_stable_frames').value)
         self.calib_kp             = float(gp('calib_kp').value)
+        self.slope_tolerance      = float(gp('slope_tolerance').value)
+        self.calib_kp_slope       = float(gp('calib_kp_slope').value)
 
         self.error         = None
+        self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
         self.last_error    = 0.0
         self.last_w        = 0.0
         self.smooth_w      = 0.0
@@ -138,7 +143,8 @@ class LaneController(Node):
         self.calib_stable_count = 0
         self.calib_smooth_w     = 0.0
 
-        self.sub_err  = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
+        self.sub_err   = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
+        self.sub_slope = self.create_subscription(Float32, '/lane_slope', self.on_slope, 10)
         self.sub_imu  = self.create_subscription(Imu, imu_topic, self.on_imu, 10)
         self.sub_odom = self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
         self.pub      = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -190,6 +196,12 @@ class LaneController(Node):
             if not self.initialized:
                 self.initialized = True
                 self.get_logger().info('Amarillo detectado — calibrando posición inicial...')
+
+    def on_slope(self, msg):
+        # Pendiente de la línea guía (top vs bottom). Si llega NaN (línea
+        # insuficiente para trazarla) se mantiene el último valor conocido.
+        if not math.isnan(msg.data):
+            self.slope = msg.data
 
     # ------------------------------------------------------------------
     def _trend(self):
@@ -253,11 +265,15 @@ class LaneController(Node):
         # correcta, ángulo recto respecto al amarillo y a la línea de
         # recorrido, distancia exacta amarillo↔centro.
         if not self.pre_calibrated:
-            e = self.error if self.error is not None else 0.0
+            e     = self.error if self.error is not None else 0.0
+            slope = self.slope   # pendiente de la línea guía (0 = recta)
             self.error_history.append(e)
             trend = self._trend()
 
-            if abs(e) < self.calib_tolerance and abs(trend) < self.calib_tolerance:
+            centrado = abs(e) < self.calib_tolerance and abs(trend) < self.calib_tolerance
+            recto    = abs(slope) < self.slope_tolerance
+
+            if centrado and recto:
                 self.calib_stable_count += 1
             else:
                 self.calib_stable_count = 0
@@ -269,12 +285,13 @@ class LaneController(Node):
                 self.error_history.clear()
                 self.calib_smooth_w = 0.0
                 self.get_logger().info(
-                    f'Calibración inicial lograda (error={e*100:+.2f}cm) — '
-                    f'esperando {self.start_delay:.0f}s antes de avanzar...')
+                    f'Calibración inicial lograda (error={e*100:+.2f}cm, '
+                    f'pendiente={slope*100:+.2f}cm) — esperando {self.start_delay:.0f}s antes de avanzar...')
                 self.pub.publish(Twist())
                 return
 
-            w_calib = -(self.calib_kp * e)
+            # Corrige tanto el centrado (e) como la rectitud (slope) de la línea guía
+            w_calib = -(self.calib_kp * e + self.calib_kp_slope * slope)
             w_calib = max(-self.calib_w, min(self.calib_w, w_calib))
             self.calib_smooth_w = 0.85 * self.calib_smooth_w + 0.15 * w_calib
             cmd = Twist()

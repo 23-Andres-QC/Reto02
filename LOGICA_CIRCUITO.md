@@ -16,6 +16,9 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que el robot intenta
   minimizar de error para avanzar recto — no es una línea fija, se vuelve a trazar constantemente
   según dónde esté el amarillo
+- También se publica `/lane_slope`: la pendiente entre el punto superior e inferior de esa línea
+  guía (0 = recta/vertical, distinto de 0 = el robot está angulado respecto a la pista). Se usa
+  en la calibración inicial para exigir que el robot arranque realmente derecho, no solo centrado
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
 - Debug (`/lane/debug_image`): overlay translúcido sobre la cámara real (bird's-eye), no fondo negro;
   **3 líneas verdes** = las 3 bandas de medición; **línea magenta** = recorrido planeado (3 puntos)
@@ -32,9 +35,15 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
 ```
 1. CALIBRACIÓN ACTIVA (no avanza, solo ajusta ángulo):
    se activa al ver amarillo por primera vez.
-   w = -(calib_kp * e), limitado a ±calib_w
+   e     = error promedio (centrado lateral)
+   slope = pendiente de la línea guía (top vs bottom, /lane_slope) — 0 = recta,
+           distinto de 0 = el robot está angulado respecto a la pista aunque
+           el centrado promedio ya esté bien
+   w = -(calib_kp * e + calib_kp_slope * slope), limitado a ±calib_w
    Calibrado cuando |e| y |tendencia(e)| < calib_tolerance (1.2cm)
-   durante calib_stable_frames (15 frames ≈0.5s) seguidos.
+   Y |slope| < slope_tolerance (1.5cm)
+   durante calib_stable_frames (15 frames ≈0.5s) seguidos — así no solo queda
+   bien centrado en promedio, sino realmente derecho respecto a la pista.
 
 2. ESPERA: calibrado → captura calib_bias=e, initial_yaw (IMU),
    pos_x0,y0 (odom) → espera start_delay (5s) sin moverse.

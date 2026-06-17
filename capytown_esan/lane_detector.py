@@ -91,7 +91,8 @@ class LaneDetector(Node):
 
         self.sub     = self.create_subscription(
             Image, '/image_raw', self.on_image, 10)
-        self.pub_err = self.create_publisher(Float32, '/lane_error', 10)
+        self.pub_err   = self.create_publisher(Float32, '/lane_error', 10)
+        self.pub_slope = self.create_publisher(Float32, '/lane_slope', 10)
         self.pub_dbg = self.create_publisher(Image, '/lane/debug_image', 10)
         self.pub_servo = self.create_publisher(Int32, '/servo_s2', 10)
 
@@ -190,6 +191,16 @@ class LaneDetector(Node):
         band_points    = [_band_yellow_center(sl) for sl in band_slices]  # [(xy,xc), ...]
         trajectory_pts = [(c, r) for (_, c), r in zip(band_points, band_rows) if c is not None]
 
+        # Pendiente de la línea guía (superior vs inferior): si la línea no está
+        # vertical, el robot está desalineado angularmente respecto a la pista,
+        # aunque el error promedio sea ~0. Se usa en la calibración inicial para
+        # exigir que el robot arranque realmente recto, no solo bien centrado.
+        if len(trajectory_pts) >= 2:
+            (x_top, y_top), (x_bot, y_bot) = trajectory_pts[0], trajectory_pts[-1]
+            slope_m = (x_top - x_bot) / self.px_per_meter
+        else:
+            slope_m = float('nan')
+
         # Promedio de los centroides de amarillo válidos en las 3 bandas — usa
         # toda la línea visible, no solo un punto, para el cálculo del error.
         yellow_vals  = [xy for xy, _ in band_points if xy is not None]
@@ -232,6 +243,10 @@ class LaneDetector(Node):
         out      = Float32()
         out.data = float(error_m)
         self.pub_err.publish(out)
+
+        slope_out      = Float32()
+        slope_out.data = float(slope_m)
+        self.pub_slope.publish(slope_out)
 
         if self.publish_debug:
             self._publish_debug(warp, mask_white, mask_yellow, band_rows,
