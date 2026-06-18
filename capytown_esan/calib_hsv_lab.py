@@ -49,7 +49,7 @@ class CalibHsvLab(Node):
             ('lane_width_m', 0.22),
             ('px_per_meter', 600.0),
             ('white_bias_m', 0.02),
-            ('slope_band_frac', 0.15),
+            ('slope_lookahead_m', 0.03),
             ('imu_topic', '/imu'),
             ('odom_topic', '/odom_raw'),
         ])
@@ -74,7 +74,7 @@ class CalibHsvLab(Node):
         self.lane_width_m = float(gp('lane_width_m').value)
         self.px_per_meter = float(gp('px_per_meter').value)
         self.white_bias_m = float(gp('white_bias_m').value)
-        self.slope_band_frac = float(gp('slope_band_frac').value)
+        self.slope_lookahead_m = float(gp('slope_lookahead_m').value)
 
         self.M, self.warp_size = None, None
         self.x_yellow_f = None
@@ -227,10 +227,11 @@ class CalibHsvLab(Node):
         band_points    = [band_center(sl) for sl in band_slices]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Amarillo, SOLO dentro de una franja angosta al fondo de la imagen
-        # (slope_band_frac) — igual que lane_detector.py. Más angosta que
-        # la banda inferior de error, para minimizar cuánto "mira adelante".
-        slope_slice = slice(int(h * (1.0 - self.slope_band_frac)), h)
+        # Amarillo, SOLO dentro de una franja angosta al fondo de la imagen,
+        # de tamaño en metros reales (slope_lookahead_m) — igual que
+        # lane_detector.py. Más angosta que la banda inferior de error.
+        slope_band_px = max(5, int(self.slope_lookahead_m * self.px_per_meter))
+        slope_slice = slice(max(0, h - slope_band_px), h)
         slope_m = self._inferior_slope(mask_yellow, slope_slice)
 
         # La posición real del robot la marca la banda INFERIOR (la más

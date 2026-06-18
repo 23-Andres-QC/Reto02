@@ -28,19 +28,21 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que se dibuja en
   el debug — no es una línea fija, se vuelve a trazar constantemente según dónde esté el amarillo
 - También se publica `/lane_slope`: la pendiente del **AMARILLO** (no el centro combinado),
-  calculada **SOLO con los píxeles dentro de una franja ANGOSTA al fondo de la imagen**
-  (`slope_band_frac`, 15% de la altura por defecto — bastante más angosta que la banda inferior
-  de error/posición, que es 1/3 de la imagen). `_inferior_slope` ajusta una línea con
-  `cv2.fitLine` a esos píxeles y la evalúa en el borde superior e inferior de esa franja — NO
-  usa la banda central ni la superior para nada. Los giros usan amarillo como referencia porque
-  es la línea más confiable y continua en toda la pista (el blanco puede faltar o invalidarse
-  en curvas). Antes se calculaba comparando el centro de la banda central contra el de la
-  inferior — la banda central mira más adelante en la pista, anticipando el giro 7-10cm antes
-  de tiempo. Cambiarlo a "toda la banda inferior" (1/3 de la imagen) ya ayudó pero seguía
-  anticipando ~5cm, porque el borde superior de esa banda completa también sigue estando varios
-  cm adelante del punto real del robot. Con una franja mucho más angosta (15%), el borde lejano
-  de la franja queda muy cerca del punto actual, minimizando cuánto "mira adelante" la decisión
-  de girar
+  calculada **SOLO con los píxeles dentro de una franja ANGOSTA al fondo de la imagen**, de
+  tamaño definido en **metros reales** (`slope_lookahead_m`, 3cm por defecto — no en % de
+  imagen, para no depender de la resolución de la cámara). `_inferior_slope` ajusta una línea
+  con `cv2.fitLine` a esos píxeles y la evalúa en el borde superior e inferior de esa franja —
+  NO usa la banda central ni la superior para nada. Los giros usan amarillo como referencia
+  porque es la línea más confiable y continua en toda la pista (el blanco puede faltar o
+  invalidarse en curvas). Historial de ajuste de este margen:
+  - Banda central vs inferior (versión original): anticipaba el giro 7-10cm antes de tiempo
+    (la banda central mira mucho más adelante en la pista de lo que el robot alcanzó)
+  - Toda la banda inferior (1/3 de imagen): ayudó, pero seguía anticipando ~5cm — el borde
+    superior de esa banda completa todavía estaba varios cm adelante del robot
+  - Franja de 15% de la imagen (sin unidades físicas): demasiado angosta en la práctica — el
+    robot a veces avanzaba tanto que perdía el amarillo antes de llegar a comprometerse al giro
+  - **Actual**: franja definida en cm reales (`slope_lookahead_m=0.03`, 3cm) — suficiente margen
+    para no perder la línea antes de girar, sin volver a anticipar varios cm como al principio
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
 - **Zona de seguridad ANTICIPADA** (margen base 30% del carril ≈6.6cm desde cada línea, empujón ×1.2,
   agrandado por ángulo con ganancia 0.7, tope de error ±0.20m): si el robot se acerca demasiado a
