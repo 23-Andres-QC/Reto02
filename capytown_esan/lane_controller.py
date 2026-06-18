@@ -59,32 +59,8 @@ class LaneController(Node):
             ('start_delay',     5.0),
             ('imu_topic',       '/imu'),
             ('odom_topic',      '/odom_raw'),
-            ('calib_tolerance', 0.025),  # m — error/pendiente máximos para considerar "centrado" (uso: salida de esquina)
             ('curve_speed_factor', 0.6), # reduce velocidad lineal 40% siempre
             ('slope_curve_threshold', 0.04),  # m — pendiente mínima para anticipar curva (predictivo)
-            ('sharp_turn_slope_threshold', 0.13),  # m — pendiente que indica esquina ~90° real (antes 0.09, muy temprano)
-            ('sharp_turn_kp_slope',   3.0),    # ganancia del giro sobre la pendiente del amarillo (antes tasa fija sharp_turn_w)
-            ('sharp_turn_kp_e',       2.5),    # ganancia sobre el error lateral — cierra el giro
-            ('sharp_turn_max_w',      0.80),   # rad/s — tope del giro de esquina (base + corrección)
-            ('sharp_turn_speed_factor', 0.3),  # avance muy reducido mientras gira en la esquina
-            ('max_anticipation_time', 0.8),    # s — tope de tiempo anticipando antes de forzar el giro cerrado
-            ('sharp_turn_smooth_alpha', 0.30),  # suavizado de angular.z SOLO durante el giro (antes
-                                                 # 0.10, igual que en AVANCE): con un alpha tan bajo,
-                                                 # el comando suavizado tardaba varios cientos de ms
-                                                 # en bajar después de que slope/e_turn ya indicaban
-                                                 # "centrado, dejar de girar" — ese retraso se traducía
-                                                 # en rotación física de más (~30° reportados). Un
-                                                 # alpha más alto responde más rápido a la caída de
-                                                 # slope/e_turn, sin perder el suavizado por completo
-            ('combined_exit_tolerance', 0.05),  # m — tolerancia del error COMBINADO (amarillo+blanco)
-                                                 # para confirmar la salida del giro (separada de
-                                                 # calib_tolerance porque el combinado tiene un sesgo
-                                                 # deliberado de white_bias_m hacia el amarillo, y con
-                                                 # calib_tolerance=2.5cm casi no quedaba margen para que
-                                                 # bajara del umbral justo tras un giro — el carrito se
-                                                 # quedaba esperando esa condición de más, seguía
-                                                 # girando/avanzando sin corregir, y salía ya desalineado
-                                                 # (zigzag). Más floja que calib_tolerance a propósito.
         ])
 
         gp = self.get_parameter
@@ -100,20 +76,10 @@ class LaneController(Node):
         rate             = float(gp('control_rate').value)
         imu_topic        = str(gp('imu_topic').value)
         odom_topic       = str(gp('odom_topic').value)
-        self.calib_tolerance     = float(gp('calib_tolerance').value)
         self.curve_speed_factor   = float(gp('curve_speed_factor').value)
         self.slope_curve_threshold = float(gp('slope_curve_threshold').value)
-        self.sharp_turn_slope_threshold = float(gp('sharp_turn_slope_threshold').value)
-        self.sharp_turn_kp_slope         = float(gp('sharp_turn_kp_slope').value)
-        self.sharp_turn_kp_e            = float(gp('sharp_turn_kp_e').value)
-        self.sharp_turn_max_w           = float(gp('sharp_turn_max_w').value)
-        self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
-        self.max_anticipation_time      = float(gp('max_anticipation_time').value)
-        self.sharp_turn_smooth_alpha    = float(gp('sharp_turn_smooth_alpha').value)
-        self.combined_exit_tolerance   = float(gp('combined_exit_tolerance').value)
 
         self.error         = None
-        self.error_yellow  = None   # error solo-amarillo (ignora blanco) — usado SOLO al girar
         self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
         self.last_error    = 0.0
         self.smooth_w      = 0.0
@@ -122,7 +88,6 @@ class LaneController(Node):
         self.start_time    = None
         self.last_stamp    = self.get_clock().now()
         self.last_rx       = self.get_clock().now()
-        self.anticipation_timer = 0.0   # tiempo acumulado anticipando una curva sin resolver
 
         # IMU — yaw (solo diagnóstico/log, no se usa en la ley de control:
         # un rumbo fijo capturado una vez no sigue al carril después de un
@@ -135,11 +100,7 @@ class LaneController(Node):
         self.pos_x0 = None   # origen registrado al iniciar
         self.pos_y0 = None
 
-        # Esquina real: giro lento dedicado hasta reencontrar línea recta
-        self.in_sharp_turn = False
-
         self.sub_err   = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
-        self.sub_err_yellow = self.create_subscription(Float32, '/lane_error_yellow', self.on_error_yellow, 10)
         self.sub_slope = self.create_subscription(Float32, '/lane_slope', self.on_slope, 10)
         self.sub_imu  = self.create_subscription(Imu, imu_topic, self.on_imu, 10)
         self.sub_odom = self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
@@ -191,12 +152,6 @@ class LaneController(Node):
                 self.get_logger().info(
                     f'Color detectado — esperando {self.start_delay:.0f}s antes de avanzar...')
 
-    def on_error_yellow(self, msg):
-        # Error solo-amarillo (ignora blanco). Si llega NaN (sin amarillo)
-        # se mantiene el último valor conocido — igual criterio que slope.
-        if not math.isnan(msg.data):
-            self.error_yellow = msg.data
-
     def on_slope(self, msg):
         # Pendiente del amarillo (banda central vs inferior). Si llega NaN
         # (línea insuficiente para trazarla) se mantiene el último valor conocido.
@@ -239,8 +194,6 @@ class LaneController(Node):
         if age > self.timeout:
             self.integral = 0.0
             self.smooth_w = 0.0
-            self.in_sharp_turn = False
-            self.anticipation_timer = 0.0
             self.pub.publish(Twist())   # frena: linear=0, angular=0
             return
 
@@ -248,96 +201,14 @@ class LaneController(Node):
         if abs(e) < 0.01:
             e = 0.0
 
-        # ── ESQUINA real (la pista tiene esquinas marcadas, no curvas suaves
-        # continuas) ──────────────────────────────────────────────────
-        # Si la pendiente crece mucho (la línea se va casi de canto), no es
-        # una curva suave a corregir con FF — es una esquina real. Entra en
-        # un giro lento y dedicado en la dirección de la pendiente, y se
-        # mantiene girando hasta volver a ver la línea recta y centrada
-        # (la "siguiente" línea amarilla/blanca tras la esquina) — ahí frena
-        # el giro y vuelve al PID normal. NO gira un ángulo fijo (ni 90° ni
-        # ningún otro): gira lo que haga falta, frame a frame, hasta volver
-        # a encontrar el centro al otro lado — la duración del giro la decide
-        # únicamente la condición de salida (slope+e bajos), nunca un ángulo
-        # acumulado.
-        #
-        # Además del umbral por MAGNITUD (sharp_turn_slope_threshold), hay un
-        # umbral por TIEMPO: si lleva "anticipando" (|slope| > slope_curve_
-        # threshold, corrección FF suave) más de max_anticipation_time
-        # seguido sin resolver, se fuerza el giro cerrado de todas formas —
-        # antes se quedaba anticipando con el FF suave hasta 2s antes de
-        # comprometerse al giro real, lo cual se sentía como un giro
-        # adelantado/abierto. Esto limita esa ventana de anticipación.
-        anticipating_now = abs(self.slope) > self.slope_curve_threshold
-        if anticipating_now:
-            self.anticipation_timer += dt
-        else:
-            self.anticipation_timer = 0.0
-
-        if (abs(self.slope) > self.sharp_turn_slope_threshold
-                or self.anticipation_timer > self.max_anticipation_time):
-            self.in_sharp_turn = True
-            self.anticipation_timer = 0.0   # ya se comprometió al giro, no sigue acumulando
-
-        if self.in_sharp_turn:
-            # Mientras gira, el centrado usa SOLO amarillo (error_yellow),
-            # no el error combinado (Y+W) — durante el giro a veces aparece
-            # un blanco que pertenece a OTRO tramo de la pista (no el carril
-            # actual, ej. el siguiente tramo recto visto de costado), y el
-            # error combinado quedaba corrupto por ese blanco equivocado,
-            # contradiciendo el giro (el robot "veía" un error que lo
-            # empujaba a no girar). El amarillo es la guía durante el giro;
-            # recién al volver a AVANCE (giro terminado) se vuelve a usar
-            # el error combinado normal, momento en el que el blanco que
-            # se vea ya corresponde al tramo correcto (delante del robot).
-            e_turn = self.error_yellow if self.error_yellow is not None else e
-            if abs(e_turn) < 0.01:
-                e_turn = 0.0
-
-            # El giro NO es a un ritmo fijo/preprogramado (eso generaba un
-            # giro de radio constante — "abierto" — que no necesariamente
-            # converge al centro real, perdiendo el amarillo en vez de
-            # seguirlo, y no reflejaba lo que la cámara realmente ve). El
-            # giro se deriva directamente de la pendiente ACTUAL del
-            # amarillo (sharp_turn_kp_slope * slope): si la línea está muy
-            # de canto, gira fuerte; si ya casi se enderezó, gira poco —
-            # proporcional a lo que el amarillo muestra en cada frame, no
-            # a una tasa fija. Se suma la corrección sobre el error lateral
-            # (solo-amarillo) ACTUAL para converger al centro si llegó
-            # desviado a la esquina.
-            w_target = -(self.sharp_turn_kp_slope * self.slope + self.sharp_turn_kp_e * e_turn)
-            w_target = max(-self.sharp_turn_max_w, min(self.sharp_turn_max_w, w_target))
-            cmd.angular.z = self._smooth(w_target, alpha=self.sharp_turn_smooth_alpha)
-            cmd.linear.x  = self.v * self.sharp_turn_speed_factor
-            self.pub.publish(cmd)
-            # Salir del giro: línea ya recta (slope bajo) y centrada respecto
-            # al amarillo (e_turn bajo) — usa e_turn (solo-amarillo) para esto
-            # por la misma razón de arriba (evitar el blanco de otro tramo
-            # contaminando la corrección DURANTE el giro).
-            #
-            # Pero para confirmar la salida se exige ADEMÁS que el error
-            # combinado (self.error, amarillo Y blanco juntos cuando el
-            # blanco ya es válido) también esté centrado. Solo con e_turn no
-            # se confirma que el blanco de la pista nueva esté realmente del
-            # lado correcto y a la separación esperada — exigir las dos
-            # condiciones asegura que el carrito quede centrado de verdad
-            # entre AMBAS líneas nuevas antes de volver a avanzar, no solo
-            # alineado con el amarillo.
-            #
-            # combined_exit_tolerance (más floja que calib_tolerance): el
-            # error combinado trae un sesgo deliberado de white_bias_m hacia
-            # el amarillo, así que casi nunca bajaba de calib_tolerance
-            # (2.5cm) justo tras un giro — el carrito se quedaba esperando
-            # esa condición de más, seguía sin corregir, y salía ya
-            # desalineado (zigzag posterior). Con más margen confirma "el
-            # blanco está del lado correcto" sin pelear contra el sesgo.
-            yellow_ok   = abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance
-            combined_ok = abs(self.error) < self.combined_exit_tolerance
-            if yellow_ok and combined_ok:
-                self.in_sharp_turn = False
-            return
-
-        # ── AVANCE con PID — una sola ley de control, sin saltos de modo ──
+        # ── AVANCE con PID — una sola ley de control, SIEMPRE, sin modo de
+        # giro dedicado. El giro en las esquinas lo ejecuta el cambio de
+        # referencia que hace lane_detector.py cuando el blanco desaparece
+        # de cuadro (fallback solo-amarillo) — este controlador no necesita
+        # saber que está en una curva. Un modo dedicado anterior (in_sharp_
+        # turn, con su propia ley y condición de salida) acumuló bugs de
+        # signo, explosión numérica y condiciones de salida que nunca se
+        # cumplían — esta versión es deliberadamente más simple.
         P = self.kp * e
         self.integral += e * dt
         self.integral  = max(-self.i_limit, min(self.i_limit, self.integral))

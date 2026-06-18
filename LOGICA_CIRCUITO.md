@@ -109,90 +109,37 @@ error < 0 → robot desplazado a la DERECHA   → girar IZQUIERDA → ω > 0
    NO en la ley de control (ver "Sin término de rumbo fijo" más abajo).
 ```
 
-## Esquina real (track con esquinas marcadas, no curvas suaves continuas)
+## Esquinas — SIN modo de giro dedicado
 
-La pista tiene esquinas marcadas (en la práctica, cercanas a 90°), no curvas suaves
-continuas. Si la pendiente crece mucho (la línea se va casi de canto), no es algo
-para corregir con FF — es una esquina real. Se activa un modo dedicado, ANTES de la
-ley PID normal. **Importante: el giro NUNCA es por un ángulo fijo (ni 90° ni ningún
-otro acumulado)** — gira frame a frame lo que la pendiente actual indique, y la
-ÚNICA condición que decide cuándo dejar de girar es volver a encontrar el centro
-(slope y error bajos) al otro lado de la esquina, sin importar cuántos grados haya
-girado realmente para lograrlo. (Antes existía un acumulador de ángulo girado,
-`_track_corner`/`CORNER_THRESHOLD`, puramente informativo — no afectaba la ley de
-control, pero sugería un modelo de "giro de 90°" que no es real; se eliminó.)
+La pista tiene esquinas marcadas (en la práctica, cercanas a 90°), pero el
+controlador **no tiene ningún modo especial para girar**. No hay `in_sharp_turn`,
+no hay condición de salida, no hay ley de control separada para la esquina.
+El giro lo ejecuta `lane_detector.py` simplemente cambiando a qué le presta
+atención: cuando el blanco desaparece de cuadro (entrando a la esquina), el
+error pasa de "centro entre amarillo y blanco" a "solo amarillo, con su
+fallback ±11cm" (ver Detección) — ese salto de referencia es lo que hace que
+el error crezca y el PID normal gire fuerte, sin que el controlador necesite
+saber que está en una curva. Al reaparecer el blanco del tramo siguiente, el
+error vuelve a ser el combinado normal y el PID sigue centrando como siempre.
 
-```
-Dos formas de entrar en in_sharp_turn = True:
-  1. Por MAGNITUD: |slope| > sharp_turn_slope_threshold (13cm, antes 9cm — se
-     disparaba 7-10cm antes de tiempo, demasiado temprano para una esquina real)
-  2. Por TIEMPO: lleva anticipando (|slope| > slope_curve_threshold, 4cm) de forma
-     continua más de max_anticipation_time (0.8s) sin resolver → fuerza el giro
-     cerrado igual, aunque la magnitud no haya llegado al umbral de esquina.
-     (Antes el robot podía quedarse anticipando con el FF suave hasta ~2s antes
-     de comprometerse al giro real — se sentía como un giro adelantado/abierto.
-     Este tope de tiempo limita esa ventana.)
+**Por qué se eliminó el modo dedicado (`in_sharp_turn`)**: una versión anterior
+tenía un bloque separado, activado por umbral de pendiente (`/lane_slope`),
+con su propia ley de control, su propia condición de salida (doble: amarillo
++ combinado) y su propio suavizado. Esa arquitectura acumuló, en sucesivas
+vueltas de ajuste, un bug de signo en el cálculo de pendiente, explosión
+numérica cuando la línea quedaba casi horizontal, retraso de varios cientos
+de ms por el suavizado que producía sobregiro, y una condición de salida que
+casi nunca se cumplía a tiempo (causando zigzag al volver a avanzar). Quitar
+el modo dedicado por completo y dejar que la misma ley PID+FF continua
+maneje todo —recta y curva— elimina esa categoría entera de bugs: no hay
+condición de salida que falle porque no hay nada que "salir".
 
-Mientras in_sharp_turn:
-  e_turn = error_yellow (SOLO amarillo, ignora blanco) — ver más abajo por qué
-  w = -(sharp_turn_kp_slope * slope + sharp_turn_kp_e * e_turn), limitado a ±sharp_turn_max_w
-  angular.z = suavizado (alpha=sharp_turn_smooth_alpha=0.30, antes 0.10 — ver más abajo por qué)
-  linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
-  Sale del giro (in_sharp_turn = False) cuando se cumplen LAS DOS:
-    1. yellow_ok:   |slope| < slope_curve_threshold (4cm)  Y  |e_turn| < calib_tolerance (2.5cm)
-                    → el amarillo ya está recto y centrado
-    2. combined_ok: |error| < combined_exit_tolerance (5cm) — error COMBINADO (amarillo+blanco)
-                    → el blanco de la pista nueva también está confirmado, del lado
-                      correcto y a la separación esperada — no solo "el amarillo se ve bien"
-    Exigir las dos evita salir del giro centrado solo respecto al amarillo pero todavía
-    desviado respecto al blanco de la línea nueva (el carrito debe quedar centrado entre
-    AMBAS líneas antes de volver a avanzar, no solo alineado con una)
+`/lane_slope` y `/lane_error_yellow` siguen existiendo en `lane_detector.py`
+(sin tocar) — `/lane_slope` todavía alimenta el feed-forward (FF) de
+anticipación en la ley PID normal (ver más abajo); `/lane_error_yellow` ya no
+lo consume nadie, queda publicado pero sin uso en el control real.
 
-    combined_exit_tolerance (5cm) es MÁS FLOJA que calib_tolerance (2.5cm) a propósito: el
-    error combinado trae el sesgo deliberado de white_bias_m hacia el amarillo (ver Detección),
-    así que casi nunca bajaba de 2.5cm justo tras un giro — el carrito se quedaba esperando esa
-    condición de más tiempo del necesario, seguía sin corregir mientras esperaba, y terminaba
-    saliendo ya desalineado (zigzag al entrar a AVANCE). Con más margen confirma "el blanco
-    está del lado correcto" sin pelear contra ese sesgo.
-
-El giro NO es a una tasa fija/preprogramada (`sharp_turn_w` constante, versión
-anterior): eso generaba un giro de radio constante ("abierto") que no
-necesariamente converge al centro real, y además no reflejaba lo que la
-cámara realmente estaba viendo en cada instante. Ahora el giro se deriva
-directamente de `sharp_turn_kp_slope * slope` — proporcional a la pendiente
-ACTUAL del amarillo: si la línea está muy de canto gira fuerte, si ya casi
-se enderezó gira poco. Se suma `sharp_turn_kp_e * e_turn` para converger al
-centro si el robot llegó desviado a la esquina.
-
-**¿Por qué `e_turn` usa SOLO amarillo (`/lane_error_yellow`) y no el error
-combinado normal?** Mientras gira, a veces aparece un blanco que pertenece a
-OTRO tramo de la pista (no el carril actual — por ejemplo, el siguiente
-tramo recto visto de costado durante el giro). El error combinado `(Y+W)/2`
-quedaba corrupto por ese blanco equivocado: el robot "veía" un error que lo
-empujaba a NO girar, contradiciendo el giro que el amarillo sí pedía.
-`lane_detector.py` publica `/lane_error_yellow` = amarillo + mitad del
-carril (misma fórmula que el fallback solo-amarillo, pero calculada
-SIEMPRE que haya amarillo, sin importar si también hay blanco). El amarillo
-es la guía durante el giro; recién al volver a AVANCE (giro terminado) se
-usa de nuevo el error combinado normal, momento en el que el blanco que se
-vea ya corresponde al tramo correcto (delante del robot, no a un costado).
-
-**¿Por qué `sharp_turn_smooth_alpha` se subió de 0.10 a 0.30?** La condición
-de salida (arriba) se evalúa con `self.slope`/`e_turn` CRUDOS, así que la
-decisión de "ya está centrado, dejar de girar" no tiene retraso. El problema
-era la EJECUCIÓN: `angular.z` pasa por un filtro exponencial (`_smooth`) antes
-de publicarse, y con `alpha=0.10` el comando real tardaba varios cientos de
-ms en bajar después de que el ángulo real ya estaba resuelto — durante ese
-tiempo el robot seguía rotando con un comando "viejo" más alto del que ya
-hacía falta, girando de más (reportado: ~30° extra). Subir el alpha hace que
-el comando publicado siga más de cerca al valor que pide la pendiente actual,
-reduciendo ese sobregiro por retraso sin perder el suavizado por completo.
-```
-
-Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID normal
-(la ley PID de avance no se ejecuta esos frames).
-
-## Control en avance — una sola ley PID
+## Control en avance — una sola ley PID, SIEMPRE (recta y curva)
 
 ```
 e = error (banda inferior, ver Detección)  (si |e|<1cm → 0, ruido)
@@ -298,13 +245,8 @@ amarillo (px), separación (cm), error (cm), yaw (IMU), posición (odometría), 
    (e, slope); la IMU solo se usa para diagnóstico/log
 10. `lane_width_m` debe ser **0.22** (22cm reales) para que la mitad sea exactamente 11cm — si se
     cambia, el log de separación se recalcula solo (usa `target_cm` derivado, no un número fijo)
-11. La pista tiene esquinas reales (en la práctica, cercanas a 90°), no curvas suaves continuas —
-    por eso existen dos umbrales de `slope` distintos: uno para anticipar (FF, suave) y otro mayor
-    para esquina real (giro lento dedicado, `in_sharp_turn`) — no confundirlos ni unificarlos en uno solo
-12. El giro de esquina (`in_sharp_turn`) no usa una tasa angular fija/preprogramada — se deriva
-    proporcionalmente de la pendiente ACTUAL del amarillo (`sharp_turn_kp_slope * slope`), igual
-    que el resto del control: todo viene de lo que la cámara ve en el frame actual
-13. El giro de esquina NUNCA se detiene por haber girado un ángulo fijo (ni 90° ni ningún otro
-    acumulado) — la única condición de salida es volver a encontrar el centro (slope y error
-    bajos) al otro lado. No reintroducir ningún acumulador de ángulo girado para decidir cuándo
-    parar de girar
+11. NO reintroducir un modo de giro dedicado (`in_sharp_turn` o similar) en `lane_controller.py`.
+    El giro lo ejecuta el cambio de referencia de `lane_detector.py` (amarillo solo, fallback
+    ±11cm) cuando el blanco desaparece — la misma ley PID+FF de siempre lo maneja, sin saber
+    que está en una curva. Un modo dedicado anterior acumuló bugs de signo, explosión numérica
+    y condiciones de salida que nunca se cumplían a tiempo
