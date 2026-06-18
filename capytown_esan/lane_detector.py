@@ -59,6 +59,9 @@ class LaneDetector(Node):
             ('px_per_meter',    600.0),
             ('publish_debug',   True),
             ('white_bias_m',    0.02),  # m — desplaza el centro objetivo hacia el amarillo (se apegaba al blanco)
+            ('slope_band_frac', 0.15),  # fracción de la imagen (desde el fondo) usada SOLO para el slope —
+                                         # más angosta que la banda inferior de error, para minimizar cuánto
+                                         # "mira adelante" la decisión de girar (anticipaba varios cm antes)
         ])
 
         gp = self.get_parameter
@@ -87,6 +90,7 @@ class LaneDetector(Node):
         self.px_per_meter   = float(gp('px_per_meter').value)
         self.publish_debug  = bool(gp('publish_debug').value)
         self.white_bias_m   = float(gp('white_bias_m').value)
+        self.slope_band_frac = float(gp('slope_band_frac').value)
 
         self.M         = None
         self.warp_size = None
@@ -219,15 +223,17 @@ class LaneDetector(Node):
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
         # Pendiente para los GIROS: usa solo el AMARILLO, y SOLO dentro de
-        # la banda INFERIOR (ajustando una línea a sus píxeles) — no la
-        # banda central. La banda central mira más adelante en la pista,
-        # lo que hacía que la pendiente reaccionara a una curva que el
-        # robot todavía no alcanza, anticipando el giro demasiado pronto.
-        # Calculando la pendiente solo con lo que hay DENTRO de la banda
-        # inferior (la más cercana al robot), la decisión de girar depende
-        # únicamente de lo que está pasando justo donde está el robot, no
-        # de lo que se ve más lejos.
-        slope_m = self._inferior_slope(mask_yellow, band_slices[2])
+        # una franja ANGOSTA justo al fondo de la imagen (slope_band_frac,
+        # 15% por defecto) — más angosta que la banda inferior usada para
+        # el error/posición (band_slices[2], 1/3 de la imagen). Incluso
+        # usando solo la banda inferior completa, su borde superior sigue
+        # estando varios cm adelante del punto real del robot, anticipando
+        # el giro antes de tiempo. Con una franja más angosta, el borde
+        # lejano de la franja está mucho más cerca del punto actual del
+        # robot, así que la decisión de girar depende de lo que pasa casi
+        # exactamente donde está el robot, no unos cm más adelante.
+        slope_slice = slice(int(h * (1.0 - self.slope_band_frac)), h)
+        slope_m = self._inferior_slope(mask_yellow, slope_slice)
 
         # La posición real del robot la marca la banda INFERIOR (la más
         # cercana al robot). Las bandas superior y central no son "dónde

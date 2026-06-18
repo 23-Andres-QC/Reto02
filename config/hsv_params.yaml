@@ -27,3 +27,4 @@ lane_detector:
     px_per_meter: 600.0
     publish_debug: true
     white_bias_m: 0.02   # m — desplaza el centro objetivo 2cm hacia el amarillo (se apegaba mucho al blanco)
+    slope_band_frac: 0.15   # franja angosta al fondo de la imagen (15%) usada SOLO para el slope — minimiza cuánto "mira adelante" antes de decidir girar

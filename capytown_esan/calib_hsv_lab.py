@@ -49,6 +49,7 @@ class CalibHsvLab(Node):
             ('lane_width_m', 0.22),
             ('px_per_meter', 600.0),
             ('white_bias_m', 0.02),
+            ('slope_band_frac', 0.15),
             ('imu_topic', '/imu'),
             ('odom_topic', '/odom_raw'),
         ])
@@ -73,6 +74,7 @@ class CalibHsvLab(Node):
         self.lane_width_m = float(gp('lane_width_m').value)
         self.px_per_meter = float(gp('px_per_meter').value)
         self.white_bias_m = float(gp('white_bias_m').value)
+        self.slope_band_frac = float(gp('slope_band_frac').value)
 
         self.M, self.warp_size = None, None
         self.x_yellow_f = None
@@ -225,9 +227,11 @@ class CalibHsvLab(Node):
         band_points    = [band_center(sl) for sl in band_slices]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Amarillo, SOLO dentro de la banda inferior (ajuste de línea) —
-        # igual que lane_detector.py. No usa la banda central.
-        slope_m = self._inferior_slope(mask_yellow, band_slices[2])
+        # Amarillo, SOLO dentro de una franja angosta al fondo de la imagen
+        # (slope_band_frac) — igual que lane_detector.py. Más angosta que
+        # la banda inferior de error, para minimizar cuánto "mira adelante".
+        slope_slice = slice(int(h * (1.0 - self.slope_band_frac)), h)
+        slope_m = self._inferior_slope(mask_yellow, slope_slice)
 
         # La posición real del robot la marca la banda INFERIOR (la más
         # cercana al robot). Superior/central solo se usan para la pendiente.
