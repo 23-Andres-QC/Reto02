@@ -50,6 +50,7 @@ class CalibHsvLab(Node):
             ('px_per_meter', 600.0),
             ('white_bias_m', 0.02),
             ('slope_lookahead_m', 0.03),
+            ('slope_scale_m', 0.20),
             ('imu_topic', '/imu'),
             ('odom_topic', '/odom_raw'),
         ])
@@ -75,6 +76,7 @@ class CalibHsvLab(Node):
         self.px_per_meter = float(gp('px_per_meter').value)
         self.white_bias_m = float(gp('white_bias_m').value)
         self.slope_lookahead_m = float(gp('slope_lookahead_m').value)
+        self.slope_scale_m     = float(gp('slope_scale_m').value)
 
         self.M, self.warp_size = None, None
         self.x_yellow_f = None
@@ -141,7 +143,10 @@ class CalibHsvLab(Node):
 
     def _inferior_slope(self, mask_yellow, sl):
         """Pendiente del amarillo usando SOLO los píxeles de la banda dada
-        (la inferior) — igual que lane_detector.py, no usa la central."""
+        (la inferior) — igual que lane_detector.py, no usa la central.
+        Tangente real (dx/dy) por slope_scale_m fijo — ver comentario en
+        lane_detector.py sobre por qué no se usa directamente el
+        desplazamiento dentro de la banda."""
         ys, xs = np.where(mask_yellow[sl, :] > 0)
         if len(xs) < 20:
             return float('nan')
@@ -149,11 +154,8 @@ class CalibHsvLab(Node):
         vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
         if abs(vy) < 1e-6:
             return float('nan')
-        y_top = 0
-        y_bot = (sl.stop - sl.start) - 1
-        x_top = x0 + (y_top - y0) * (vx / vy)
-        x_bot = x0 + (y_bot - y0) * (vx / vy)
-        return (x_top - x_bot) / self.px_per_meter
+        tangent = vx / vy
+        return tangent * self.slope_scale_m
 
     def _ema(self, attr, value):
         prev = getattr(self, attr)

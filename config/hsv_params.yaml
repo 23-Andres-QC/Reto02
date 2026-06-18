@@ -27,4 +27,5 @@ lane_detector:
     px_per_meter: 600.0
     publish_debug: true
     white_bias_m: 0.02   # m — desplaza el centro objetivo 2cm hacia el amarillo (se apegaba mucho al blanco)
-    slope_lookahead_m: 0.03   # m — franja angosta al fondo de la imagen usada SOLO para el slope (en metros reales, no % de imagen); margen chico para no perder el amarillo antes de comprometerse al giro
+    slope_lookahead_m: 0.03   # m — DÓNDE se mide: franja angosta al fondo de la imagen usada SOLO para el slope; margen chico para no perder el amarillo antes de comprometerse al giro
+    slope_scale_m: 0.20   # m — CÓMO SE ESCALA: distancia de referencia fija para convertir la tangente real del ángulo en el valor de slope_m reportado, independiente del tamaño de la franja de arriba

@@ -59,11 +59,19 @@ class LaneDetector(Node):
             ('px_per_meter',    600.0),
             ('publish_debug',   True),
             ('white_bias_m',    0.02),  # m — desplaza el centro objetivo hacia el amarillo (se apegaba al blanco)
-            ('slope_lookahead_m', 0.03),  # m — cuánto "mira adelante" la franja usada SOLO para el slope
-                                           # (antes en % de imagen — dependía de la resolución de la cámara;
-                                           # en metros es directo. Con 0.0 anticipaba 0cm pero a veces perdía
-                                           # el amarillo antes de comprometerse al giro — 0.03 da un margen
-                                           # chico real para no perder la línea antes de girar)
+            ('slope_lookahead_m', 0.03),  # m — DÓNDE se mide: alto de la franja al fondo de la
+                                           # imagen usada SOLO para el slope (chica = casi sin
+                                           # anticipar; muy chica = a veces se pierde el amarillo
+                                           # antes de comprometerse al giro)
+            ('slope_scale_m',     0.20),  # m — CÓMO SE ESCALA el valor reportado: la pendiente se
+                                           # calcula como el ángulo real de la línea (tangente,
+                                           # independiente del tamaño de la franja de arriba) por
+                                           # esta distancia de referencia fija. Sin esto, achicar
+                                           # slope_lookahead_m también achicaba el slope_m resultante
+                                           # para la MISMA curva real, y casi nunca llegaba a cruzar
+                                           # los umbrales (slope_curve_threshold, sharp_turn_slope_
+                                           # threshold) — el robot "veía" la curva pero no llegaba a
+                                           # comprometerse al giro
         ])
 
         gp = self.get_parameter
@@ -93,6 +101,7 @@ class LaneDetector(Node):
         self.publish_debug  = bool(gp('publish_debug').value)
         self.white_bias_m   = float(gp('white_bias_m').value)
         self.slope_lookahead_m = float(gp('slope_lookahead_m').value)
+        self.slope_scale_m     = float(gp('slope_scale_m').value)
 
         self.M         = None
         self.warp_size = None
@@ -374,11 +383,19 @@ class LaneDetector(Node):
 
     def _inferior_slope(self, mask_yellow, sl):
         """Pendiente del amarillo calculada SOLO con los píxeles dentro de
-        la banda dada (la inferior) — ajusta una línea (cv2.fitLine) y
-        evalúa esa línea en el borde superior e inferior de la banda. No
+        la banda dada (la inferior) — ajusta una línea (cv2.fitLine). No
         usa ningún punto de fuera de la banda (ni central ni superior),
         así la pendiente refleja únicamente lo que pasa justo donde está
-        el robot, no la curvatura de la pista más adelante."""
+        el robot, no la curvatura de la pista más adelante.
+
+        Se calcula la tangente real del ángulo (dx/dy, adimensional —
+        no depende de qué tan alta sea la banda) y se multiplica por
+        slope_scale_m, una distancia de referencia FIJA. Si en cambio se
+        devolviera directamente el desplazamiento dentro de la banda (sin
+        esta escala fija), achicar la banda para anticipar menos (ver
+        slope_lookahead_m) también achicaría el valor reportado para la
+        MISMA curva real, y dejaría de cruzar los umbrales ya calibrados
+        (slope_curve_threshold, sharp_turn_slope_threshold)."""
         ys, xs = np.where(mask_yellow[sl, :] > 0)
         if len(xs) < 20:
             return float('nan')
@@ -386,11 +403,9 @@ class LaneDetector(Node):
         vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
         if abs(vy) < 1e-6:
             return float('nan')   # línea horizontal dentro de la banda — sin pendiente útil
-        y_top = 0
-        y_bot = (sl.stop - sl.start) - 1
-        x_top = x0 + (y_top - y0) * (vx / vy)
-        x_bot = x0 + (y_bot - y0) * (vx / vy)
-        return (x_top - x_bot) / self.px_per_meter
+        tangent = vx / vy   # dx/dy real — mismo px_per_meter en ambos ejes tras el IPM, así que
+                             # el cociente ya es adimensional (no hace falta dividir por px_per_meter)
+        return tangent * self.slope_scale_m
 
     def _ema_update(self, attr, value):
         """Filtro exponencial: suaviza la lectura cruda, resetea si se pierde detección."""

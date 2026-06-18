@@ -28,21 +28,26 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que se dibuja en
   el debug — no es una línea fija, se vuelve a trazar constantemente según dónde esté el amarillo
 - También se publica `/lane_slope`: la pendiente del **AMARILLO** (no el centro combinado),
-  calculada **SOLO con los píxeles dentro de una franja ANGOSTA al fondo de la imagen**, de
-  tamaño definido en **metros reales** (`slope_lookahead_m`, 3cm por defecto — no en % de
-  imagen, para no depender de la resolución de la cámara). `_inferior_slope` ajusta una línea
-  con `cv2.fitLine` a esos píxeles y la evalúa en el borde superior e inferior de esa franja —
-  NO usa la banda central ni la superior para nada. Los giros usan amarillo como referencia
-  porque es la línea más confiable y continua en toda la pista (el blanco puede faltar o
-  invalidarse en curvas). Historial de ajuste de este margen:
-  - Banda central vs inferior (versión original): anticipaba el giro 7-10cm antes de tiempo
-    (la banda central mira mucho más adelante en la pista de lo que el robot alcanzó)
-  - Toda la banda inferior (1/3 de imagen): ayudó, pero seguía anticipando ~5cm — el borde
-    superior de esa banda completa todavía estaba varios cm adelante del robot
-  - Franja de 15% de la imagen (sin unidades físicas): demasiado angosta en la práctica — el
-    robot a veces avanzaba tanto que perdía el amarillo antes de llegar a comprometerse al giro
-  - **Actual**: franja definida en cm reales (`slope_lookahead_m=0.03`, 3cm) — suficiente margen
-    para no perder la línea antes de girar, sin volver a anticipar varios cm como al principio
+  calculada **SOLO con los píxeles dentro de una franja ANGOSTA al fondo de la imagen**
+  (`_inferior_slope`, ajusta una línea con `cv2.fitLine`) — NO usa la banda central ni la
+  superior para nada. Los giros usan amarillo como referencia porque es la línea más confiable
+  y continua en toda la pista (el blanco puede faltar o invalidarse en curvas). Dos parámetros
+  separados controlan esto:
+  - `slope_lookahead_m` (3cm por defecto): **DÓNDE se mide** — alto de la franja, en metros
+    reales (no % de imagen, para no depender de la resolución de cámara). Chica = casi sin
+    anticipar; muy chica = a veces se pierde el amarillo antes de comprometerse al giro
+  - `slope_scale_m` (20cm por defecto): **CÓMO SE ESCALA** el valor reportado — se calcula la
+    tangente real del ángulo (`dx/dy`, adimensional, NO depende de qué tan alta sea la franja
+    de arriba) y se multiplica por esta distancia de referencia fija. Sin esto, achicar
+    `slope_lookahead_m` para anticipar menos también achicaba `slope_m` para la MISMA curva
+    real, y dejaba de cruzar los umbrales ya calibrados (`slope_curve_threshold`,
+    `sharp_turn_slope_threshold`) — el robot "detectaba" la curva pero nunca llegaba a
+    comprometerse al giro
+  - Historial de ajuste de `slope_lookahead_m`: banda central vs inferior (versión original)
+    anticipaba 7-10cm antes; toda la banda inferior (1/3 de imagen) ayudó pero seguía
+    anticipando ~5cm; franja de 15% de imagen sin unidades físicas resultó demasiado angosta en
+    la práctica (perdía el amarillo antes del giro); actual: 3cm reales, con `slope_scale_m`
+    separado para no romper la calibración de los umbrales
 - También se publica `/lane_error_yellow`: el error de centrado usando SOLO amarillo (amarillo +
   mitad del carril), calculado SIEMPRE que haya amarillo, sin importar si también hay blanco —
   a diferencia de `/lane_error`, que combina ambos colores cuando los dos están presentes y son
