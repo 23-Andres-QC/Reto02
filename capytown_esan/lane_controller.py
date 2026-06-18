@@ -76,6 +76,15 @@ class LaneController(Node):
                                                  # en rotación física de más (~30° reportados). Un
                                                  # alpha más alto responde más rápido a la caída de
                                                  # slope/e_turn, sin perder el suavizado por completo
+            ('combined_exit_tolerance', 0.05),  # m — tolerancia del error COMBINADO (amarillo+blanco)
+                                                 # para confirmar la salida del giro (separada de
+                                                 # calib_tolerance porque el combinado tiene un sesgo
+                                                 # deliberado de white_bias_m hacia el amarillo, y con
+                                                 # calib_tolerance=2.5cm casi no quedaba margen para que
+                                                 # bajara del umbral justo tras un giro — el carrito se
+                                                 # quedaba esperando esa condición de más, seguía
+                                                 # girando/avanzando sin corregir, y salía ya desalineado
+                                                 # (zigzag). Más floja que calib_tolerance a propósito.
         ])
 
         gp = self.get_parameter
@@ -101,6 +110,7 @@ class LaneController(Node):
         self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
         self.max_anticipation_time      = float(gp('max_anticipation_time').value)
         self.sharp_turn_smooth_alpha    = float(gp('sharp_turn_smooth_alpha').value)
+        self.combined_exit_tolerance   = float(gp('combined_exit_tolerance').value)
 
         self.error         = None
         self.error_yellow  = None   # error solo-amarillo (ignora blanco) — usado SOLO al girar
@@ -313,8 +323,16 @@ class LaneController(Node):
             # condiciones asegura que el carrito quede centrado de verdad
             # entre AMBAS líneas nuevas antes de volver a avanzar, no solo
             # alineado con el amarillo.
+            #
+            # combined_exit_tolerance (más floja que calib_tolerance): el
+            # error combinado trae un sesgo deliberado de white_bias_m hacia
+            # el amarillo, así que casi nunca bajaba de calib_tolerance
+            # (2.5cm) justo tras un giro — el carrito se quedaba esperando
+            # esa condición de más, seguía sin corregir, y salía ya
+            # desalineado (zigzag posterior). Con más margen confirma "el
+            # blanco está del lado correcto" sin pelear contra el sesgo.
             yellow_ok   = abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance
-            combined_ok = abs(self.error) < self.calib_tolerance
+            combined_ok = abs(self.error) < self.combined_exit_tolerance
             if yellow_ok and combined_ok:
                 self.in_sharp_turn = False
             return

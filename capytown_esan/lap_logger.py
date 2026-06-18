@@ -74,6 +74,7 @@ class LapLogger(Node):
             ('slope_curve_threshold', 0.04),
             ('sharp_turn_slope_threshold', 0.13),
             ('calib_tolerance', 0.025),
+            ('combined_exit_tolerance', 0.05),
             ('max_anticipation_time', 0.8),
             ('error_timeout', 0.5),
             # Detección HSV — mismos valores que hsv_params.yaml (lane_detector.py)
@@ -90,6 +91,7 @@ class LapLogger(Node):
         self.slope_curve_threshold      = float(gp('slope_curve_threshold').value)
         self.sharp_turn_slope_threshold = float(gp('sharp_turn_slope_threshold').value)
         self.calib_tolerance            = float(gp('calib_tolerance').value)
+        self.combined_exit_tolerance    = float(gp('combined_exit_tolerance').value)
         self.max_anticipation_time      = float(gp('max_anticipation_time').value)
         self.error_timeout              = float(gp('error_timeout').value)
 
@@ -278,7 +280,7 @@ class LapLogger(Node):
             if abs(e_turn) < 0.01:
                 e_turn = 0.0
             yellow_ok   = abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance
-            combined_ok = abs(self.error) < self.calib_tolerance
+            combined_ok = abs(self.error) < self.combined_exit_tolerance
             if yellow_ok and combined_ok:
                 self.in_sharp_turn = False
                 self.turns_done += 1

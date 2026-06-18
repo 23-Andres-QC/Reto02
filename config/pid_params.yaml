@@ -28,3 +28,4 @@ lane_controller:
     sharp_turn_speed_factor: 0.3      # avance muy reducido mientras gira en la esquina
     max_anticipation_time: 0.8        # s — tope de tiempo anticipando antes de forzar el giro cerrado
     sharp_turn_smooth_alpha: 0.30     # suavizado de angular.z SOLO durante el giro (antes 0.10) — con alpha tan bajo, el comando tardaba varios cientos de ms en bajar tras alinearse, girando de mas (~30 grados reportados)
+    combined_exit_tolerance: 0.05     # m — tolerancia del error COMBINADO para confirmar salida del giro (mas floja que calib_tolerance porque trae el sesgo de white_bias_m; con calib_tolerance casi nunca bajaba del umbral justo tras girar, atrasando la salida y causando zigzag posterior)

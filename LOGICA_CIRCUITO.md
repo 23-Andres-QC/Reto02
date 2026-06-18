@@ -141,12 +141,19 @@ Mientras in_sharp_turn:
   Sale del giro (in_sharp_turn = False) cuando se cumplen LAS DOS:
     1. yellow_ok:   |slope| < slope_curve_threshold (4cm)  Y  |e_turn| < calib_tolerance (2.5cm)
                     → el amarillo ya está recto y centrado
-    2. combined_ok: |error| < calib_tolerance (2.5cm) — error COMBINADO (amarillo+blanco)
+    2. combined_ok: |error| < combined_exit_tolerance (5cm) — error COMBINADO (amarillo+blanco)
                     → el blanco de la pista nueva también está confirmado, del lado
                       correcto y a la separación esperada — no solo "el amarillo se ve bien"
     Exigir las dos evita salir del giro centrado solo respecto al amarillo pero todavía
     desviado respecto al blanco de la línea nueva (el carrito debe quedar centrado entre
     AMBAS líneas antes de volver a avanzar, no solo alineado con una)
+
+    combined_exit_tolerance (5cm) es MÁS FLOJA que calib_tolerance (2.5cm) a propósito: el
+    error combinado trae el sesgo deliberado de white_bias_m hacia el amarillo (ver Detección),
+    así que casi nunca bajaba de 2.5cm justo tras un giro — el carrito se quedaba esperando esa
+    condición de más tiempo del necesario, seguía sin corregir mientras esperaba, y terminaba
+    saliendo ya desalineado (zigzag al entrar a AVANCE). Con más margen confirma "el blanco
+    está del lado correcto" sin pelear contra ese sesgo.
 
 El giro NO es a una tasa fija/preprogramada (`sharp_turn_w` constante, versión
 anterior): eso generaba un giro de radio constante ("abierto") que no
