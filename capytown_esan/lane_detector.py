@@ -218,18 +218,16 @@ class LaneDetector(Node):
         band_points    = [_band_center(sl) for sl in band_slices]  # [(xy,xw,xc), ...]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Pendiente para los GIROS: usa solo el AMARILLO (banda central vs
-        # inferior), no el centro combinado — el amarillo es la línea más
-        # confiable y continua en toda la pista (el blanco puede faltar o
-        # invalidarse en curvas). Centro-inferior (no superior-inferior):
-        # el punto superior (banda lejana) ve la curva mucho antes de que
-        # el robot realmente llegue ahí — anticipaba demasiado pronto el giro.
-        x_yel_mid = band_points[1][0]   # amarillo, banda central
-        x_yel_bot = band_points[2][0]   # amarillo, banda inferior
-        if x_yel_mid is not None and x_yel_bot is not None:
-            slope_m = (x_yel_mid - x_yel_bot) / self.px_per_meter
-        else:
-            slope_m = float('nan')
+        # Pendiente para los GIROS: usa solo el AMARILLO, y SOLO dentro de
+        # la banda INFERIOR (ajustando una línea a sus píxeles) — no la
+        # banda central. La banda central mira más adelante en la pista,
+        # lo que hacía que la pendiente reaccionara a una curva que el
+        # robot todavía no alcanza, anticipando el giro demasiado pronto.
+        # Calculando la pendiente solo con lo que hay DENTRO de la banda
+        # inferior (la más cercana al robot), la decisión de girar depende
+        # únicamente de lo que está pasando justo donde está el robot, no
+        # de lo que se ve más lejos.
+        slope_m = self._inferior_slope(mask_yellow, band_slices[2])
 
         # La posición real del robot la marca la banda INFERIOR (la más
         # cercana al robot). Las bandas superior y central no son "dónde
@@ -346,6 +344,26 @@ class LaneDetector(Node):
                 out[labels == i] = 255
 
         return out
+
+    def _inferior_slope(self, mask_yellow, sl):
+        """Pendiente del amarillo calculada SOLO con los píxeles dentro de
+        la banda dada (la inferior) — ajusta una línea (cv2.fitLine) y
+        evalúa esa línea en el borde superior e inferior de la banda. No
+        usa ningún punto de fuera de la banda (ni central ni superior),
+        así la pendiente refleja únicamente lo que pasa justo donde está
+        el robot, no la curvatura de la pista más adelante."""
+        ys, xs = np.where(mask_yellow[sl, :] > 0)
+        if len(xs) < 20:
+            return float('nan')
+        pts = np.column_stack((xs, ys)).astype(np.float32)
+        vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+        if abs(vy) < 1e-6:
+            return float('nan')   # línea horizontal dentro de la banda — sin pendiente útil
+        y_top = 0
+        y_bot = (sl.stop - sl.start) - 1
+        x_top = x0 + (y_top - y0) * (vx / vy)
+        x_bot = x0 + (y_bot - y0) * (vx / vy)
+        return (x_top - x_bot) / self.px_per_meter
 
     def _ema_update(self, attr, value):
         """Filtro exponencial: suaviza la lectura cruda, resetea si se pierde detección."""

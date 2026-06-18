@@ -136,6 +136,22 @@ class CalibHsvLab(Node):
                 out[labels == i] = 255
         return out
 
+    def _inferior_slope(self, mask_yellow, sl):
+        """Pendiente del amarillo usando SOLO los píxeles de la banda dada
+        (la inferior) — igual que lane_detector.py, no usa la central."""
+        ys, xs = np.where(mask_yellow[sl, :] > 0)
+        if len(xs) < 20:
+            return float('nan')
+        pts = np.column_stack((xs, ys)).astype(np.float32)
+        vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+        if abs(vy) < 1e-6:
+            return float('nan')
+        y_top = 0
+        y_bot = (sl.stop - sl.start) - 1
+        x_top = x0 + (y_top - y0) * (vx / vy)
+        x_bot = x0 + (y_bot - y0) * (vx / vy)
+        return (x_top - x_bot) / self.px_per_meter
+
     def _ema(self, attr, value):
         prev = getattr(self, attr)
         if value is None:
@@ -209,14 +225,9 @@ class CalibHsvLab(Node):
         band_points    = [band_center(sl) for sl in band_slices]
         trajectory_pts = [(c, r) for (_, _, c), r in zip(band_points, band_rows) if c is not None]
 
-        # Amarillo, banda central vs inferior (no centro combinado, no
-        # superior-inferior) — igual que lane_detector.py.
-        x_yel_mid = band_points[1][0]
-        x_yel_bot = band_points[2][0]
-        if x_yel_mid is not None and x_yel_bot is not None:
-            slope_m = (x_yel_mid - x_yel_bot) / self.px_per_meter
-        else:
-            slope_m = float('nan')
+        # Amarillo, SOLO dentro de la banda inferior (ajuste de línea) —
+        # igual que lane_detector.py. No usa la banda central.
+        slope_m = self._inferior_slope(mask_yellow, band_slices[2])
 
         # La posición real del robot la marca la banda INFERIOR (la más
         # cercana al robot). Superior/central solo se usan para la pendiente.

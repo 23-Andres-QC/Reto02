@@ -27,20 +27,25 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
   (Antes el error promediaba las 3 bandas — mezclaba la posición actual con la guía futura.)
 - Esos 3 puntos se recalculan cada frame y trazan la **línea de recorrido (guía)** que se dibuja en
   el debug — no es una línea fija, se vuelve a trazar constantemente según dónde esté el amarillo
-- También se publica `/lane_slope`: la pendiente del **AMARILLO** (no el centro combinado) entre
-  su punto **central** e **inferior** (0 = recta/vertical, distinto de 0 = el robot está angulado
-  respecto a la pista). Los giros usan amarillo como referencia porque es la línea más confiable y
-  continua en toda la pista (el blanco puede faltar o invalidarse en curvas). Se usa centro-inferior
-  y NO superior-inferior — el punto superior (banda lejana) ve la curva mucho antes de que el robot
-  realmente llegue, así que usarlo anticipaba el giro demasiado pronto. Se usa en la calibración
-  inicial para exigir que el robot arranque realmente derecho, no solo centrado
+- También se publica `/lane_slope`: la pendiente del **AMARILLO** (no el centro combinado),
+  calculada **SOLO con los píxeles dentro de la banda INFERIOR** (`_inferior_slope`, ajusta una
+  línea con `cv2.fitLine` a esos píxeles y la evalúa en el borde superior e inferior de esa
+  banda) — NO usa la banda central ni la superior para nada. Los giros usan amarillo como
+  referencia porque es la línea más confiable y continua en toda la pista (el blanco puede
+  faltar o invalidarse en curvas). Antes se calculaba comparando el centro de la banda central
+  contra el de la inferior — pero la banda central mira más adelante en la pista (más cerca de
+  donde va a estar el robot, no de donde está ahora), lo que hacía que la pendiente reaccionara
+  a una curva que el robot todavía no alcanzaba físicamente — anticipaba el giro demasiado
+  pronto (7-10cm antes). Calculándola enteramente dentro de la banda inferior, la decisión de
+  girar depende únicamente de lo que pasa justo donde está el robot
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
 - **Zona de seguridad ANTICIPADA** (margen base 30% del carril ≈6.6cm desde cada línea, empujón ×1.2,
   agrandado por ángulo con ganancia 0.7, tope de error ±0.20m): si el robot se acerca demasiado a
   la amarilla o a la blanca, refuerza el error para alejarlo antes de cruzarla. El margen no es
-  fijo: se AGRANDA según el ángulo actual (`slope_m`, centro vs inferior) — si la línea guía
-  muestra que el carro se está angulando hacia una de las dos líneas, eso ya indica que va a
-  salirse aunque todavía no esté dentro del margen estático, así que corrige antes (anticipado
+  fijo: se AGRANDA según el ángulo actual (`slope_m`, calculado solo dentro de la banda
+  inferior) — si la línea guía muestra que el carro se está angulando hacia una de las dos
+  líneas, eso ya indica que va a salirse aunque todavía no esté dentro del margen estático,
+  así que corrige antes (anticipado
   por ángulo), no solo cuando ya está encima de la línea (reactivo por posición). Las ganancias
   se bajaron (antes ×1.8/1.2) y se agregó el tope de error porque en curvas este empujón se
   sumaba al PID + FF y componía una corrección demasiado fuerte (el error rebotaba de un extremo
@@ -126,9 +131,10 @@ e = error (banda inferior, ver Detección)  (si |e|<1cm → 0, ruido)
 P = kp*e   I = ki*integral(e), anti-windup   D = kd*(e-e_anterior)/dt
 
 anticipa_curva = |slope| > slope_curve_threshold (4cm)
-  → PREDICTIVO: usa la pendiente de la línea guía (banda CENTRAL vs INFERIOR,
-    no superior vs inferior — el punto lejano anticipaba demasiado pronto),
-    no el giro que el robot ya está haciendo.
+  → PREDICTIVO: usa la pendiente del amarillo calculada SOLO dentro de la banda
+    INFERIOR (no la central ni la superior — esas miran más adelante en la
+    pista de lo que el robot ya alcanzó, anticipando demasiado pronto), no el
+    giro que el robot ya está haciendo.
 
 FF = kff*slope                → solo si anticipa_curva (slope = lectura del frame
                                  actual, sin retraso; "tendencia" del error tardaba
