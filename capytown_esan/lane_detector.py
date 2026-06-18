@@ -401,8 +401,15 @@ class LaneDetector(Node):
             return float('nan')
         pts = np.column_stack((xs, ys)).astype(np.float32)
         vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-        if abs(vy) < 1e-6:
-            return float('nan')   # línea horizontal dentro de la banda — sin pendiente útil
+        # vx,vy es un vector unitario (vx²+vy²=1): si vy es chico, la línea está
+        # casi horizontal DENTRO de la franja (típico justo en medio de un giro
+        # cerrado) y tangent=vx/vy explota con apenas ruido de unos píxeles —
+        # eso producía giros bruscos y zigzag (el comando saltaba entre valores
+        # extremos de un frame a otro). Con un piso más alto que el original
+        # (1e-6, que en la práctica nunca se activaba), se trata como "sin
+        # pendiente confiable" en vez de devolver un número enorme y ruidoso.
+        if abs(vy) < 0.05:
+            return float('nan')
         tangent = vx / vy   # dx/dy real — mismo px_per_meter en ambos ejes tras el IPM, así que
                              # el cociente ya es adimensional (no hace falta dividir por px_per_meter)
         # OJO signo: tangent = dx/dy según "y" CRECE hacia abajo (hacia el robot,
@@ -410,7 +417,13 @@ class LaneDetector(Node):
         # (el código viejo evaluaba la línea en y_top=0 (lejos) y y_bot=altura-1
         # (cerca) y restaba top-bot). Eso equivale a -tangent, no +tangent. Sin
         # este signo, el giro salía hacia el lado contrario.
-        return -tangent * self.slope_scale_m
+        slope_m = -tangent * self.slope_scale_m
+        # Tope de seguridad adicional (igual con el piso de arriba, vy=0.05 ya
+        # acota tangent a ±20, o sea slope_m a ±4m con scale=0.20 — sigue siendo
+        # enorme). Sin este tope, ráfagas de ruido cerca del piso de vy todavía
+        # podían producir comandos de giro bruscos.
+        max_slope_m = 0.35
+        return max(-max_slope_m, min(max_slope_m, slope_m))
 
     def _ema_update(self, attr, value):
         """Filtro exponencial: suaviza la lectura cruda, resetea si se pierde detección."""

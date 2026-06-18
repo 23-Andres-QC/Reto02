@@ -152,12 +152,16 @@ class CalibHsvLab(Node):
             return float('nan')
         pts = np.column_stack((xs, ys)).astype(np.float32)
         vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-        if abs(vy) < 1e-6:
+        # Piso más alto (no 1e-6) — ver lane_detector.py: línea casi horizontal
+        # dentro de la franja hace que tangent explote con poco ruido.
+        if abs(vy) < 0.05:
             return float('nan')
         tangent = vx / vy
         # Signo invertido respecto a tangent puro — ver lane_detector.py
         # (convención histórica: x_LEJOS - x_CERCA, no x_CERCA - x_LEJOS)
-        return -tangent * self.slope_scale_m
+        slope_m = -tangent * self.slope_scale_m
+        max_slope_m = 0.35
+        return max(-max_slope_m, min(max_slope_m, slope_m))
 
     def _ema(self, attr, value):
         prev = getattr(self, attr)

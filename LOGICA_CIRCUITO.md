@@ -55,6 +55,13 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
     restaba lejos−cerca). Eso equivale a `-tangent`, no a `+tangent` — el signo estaba
     invertido, así que a veces el giro salía hacia el lado contrario al real. Corregido a
     `-tangent * slope_scale_m`
+  - **Explosión numérica (corregida)**: `tangent = vx/vy` puede crecer sin límite cuando la
+    línea queda casi horizontal DENTRO de la franja (típico justo en medio de un giro cerrado),
+    así que apenas un poco de ruido de unos píxeles producía valores de `slope_m` enormes y
+    saltarines de un frame a otro — eso se sentía como giros bruscos y zigzag, y a veces el
+    robot terminaba el giro mal alineado por haber girado de más/de menos en esos saltos. Se
+    subió el piso de `|vy|` de 1e-6 (que en la práctica nunca se activaba) a `0.05`, y se agregó
+    un tope final de ±0.35m sobre `slope_m` como respaldo adicional
 - También se publica `/lane_error_yellow`: el error de centrado usando SOLO amarillo (amarillo +
   mitad del carril), calculado SIEMPRE que haya amarillo, sin importar si también hay blanco —
   a diferencia de `/lane_error`, que combina ambos colores cuando los dos están presentes y son
