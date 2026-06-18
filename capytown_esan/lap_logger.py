@@ -269,11 +269,17 @@ class LapLogger(Node):
             # Igual que lane_controller.py: mientras gira, la condición de
             # salida usa el error SOLO-AMARILLO (ignora blanco), no el
             # combinado — un blanco de otro tramo de pista puede corromper
-            # el error combinado durante el giro.
+            # el error combinado durante el giro. Pero para CONFIRMAR la
+            # salida se exige ADEMÁS que el error combinado (self.error)
+            # también esté centrado — asegura que el blanco de la pista
+            # nueva ya esté del lado correcto y a la separación esperada,
+            # no solo que el amarillo se vea recto.
             e_turn = self.error_yellow if self.error_yellow is not None else e
             if abs(e_turn) < 0.01:
                 e_turn = 0.0
-            if abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance:
+            yellow_ok   = abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance
+            combined_ok = abs(self.error) < self.calib_tolerance
+            if yellow_ok and combined_ok:
                 self.in_sharp_turn = False
                 self.turns_done += 1
                 self._w_giros.writerow([

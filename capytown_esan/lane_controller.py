@@ -301,11 +301,21 @@ class LaneController(Node):
             cmd.linear.x  = self.v * self.sharp_turn_speed_factor
             self.pub.publish(cmd)
             # Salir del giro: línea ya recta (slope bajo) y centrada respecto
-            # al amarillo (e_turn bajo) — es decir, ya llegó al centro de la
-            # proyección de las líneas nuevas, no solo "se ve recta" por
-            # casualidad de ángulo. Usa e_turn (solo-amarillo), no el error
-            # combinado, por la misma razón de arriba.
-            if abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance:
+            # al amarillo (e_turn bajo) — usa e_turn (solo-amarillo) para esto
+            # por la misma razón de arriba (evitar el blanco de otro tramo
+            # contaminando la corrección DURANTE el giro).
+            #
+            # Pero para confirmar la salida se exige ADEMÁS que el error
+            # combinado (self.error, amarillo Y blanco juntos cuando el
+            # blanco ya es válido) también esté centrado. Solo con e_turn no
+            # se confirma que el blanco de la pista nueva esté realmente del
+            # lado correcto y a la separación esperada — exigir las dos
+            # condiciones asegura que el carrito quede centrado de verdad
+            # entre AMBAS líneas nuevas antes de volver a avanzar, no solo
+            # alineado con el amarillo.
+            yellow_ok   = abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance
+            combined_ok = abs(self.error) < self.calib_tolerance
+            if yellow_ok and combined_ok:
                 self.in_sharp_turn = False
             return
 

@@ -138,10 +138,15 @@ Mientras in_sharp_turn:
   w = -(sharp_turn_kp_slope * slope + sharp_turn_kp_e * e_turn), limitado a ±sharp_turn_max_w
   angular.z = suavizado (alpha=sharp_turn_smooth_alpha=0.30, antes 0.10 — ver más abajo por qué)
   linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
-  Sale del giro (in_sharp_turn = False) cuando:
-    |slope| < slope_curve_threshold (4cm)  Y  |e_turn| < calib_tolerance (2.5cm)
-    → la línea ya está recta y centrada (respecto al amarillo) otra vez
-      (la "siguiente" línea tras la esquina)
+  Sale del giro (in_sharp_turn = False) cuando se cumplen LAS DOS:
+    1. yellow_ok:   |slope| < slope_curve_threshold (4cm)  Y  |e_turn| < calib_tolerance (2.5cm)
+                    → el amarillo ya está recto y centrado
+    2. combined_ok: |error| < calib_tolerance (2.5cm) — error COMBINADO (amarillo+blanco)
+                    → el blanco de la pista nueva también está confirmado, del lado
+                      correcto y a la separación esperada — no solo "el amarillo se ve bien"
+    Exigir las dos evita salir del giro centrado solo respecto al amarillo pero todavía
+    desviado respecto al blanco de la línea nueva (el carrito debe quedar centrado entre
+    AMBAS líneas antes de volver a avanzar, no solo alineado con una)
 
 El giro NO es a una tasa fija/preprogramada (`sharp_turn_w` constante, versión
 anterior): eso generaba un giro de radio constante ("abierto") que no
