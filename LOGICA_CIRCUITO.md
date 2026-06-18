@@ -136,7 +136,7 @@ Dos formas de entrar en in_sharp_turn = True:
 Mientras in_sharp_turn:
   e_turn = error_yellow (SOLO amarillo, ignora blanco) — ver más abajo por qué
   w = -(sharp_turn_kp_slope * slope + sharp_turn_kp_e * e_turn), limitado a ±sharp_turn_max_w
-  angular.z = suavizado (alpha=0.10)
+  angular.z = suavizado (alpha=sharp_turn_smooth_alpha=0.30, antes 0.10 — ver más abajo por qué)
   linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
   Sale del giro (in_sharp_turn = False) cuando:
     |slope| < slope_curve_threshold (4cm)  Y  |e_turn| < calib_tolerance (2.5cm)
@@ -164,6 +164,17 @@ SIEMPRE que haya amarillo, sin importar si también hay blanco). El amarillo
 es la guía durante el giro; recién al volver a AVANCE (giro terminado) se
 usa de nuevo el error combinado normal, momento en el que el blanco que se
 vea ya corresponde al tramo correcto (delante del robot, no a un costado).
+
+**¿Por qué `sharp_turn_smooth_alpha` se subió de 0.10 a 0.30?** La condición
+de salida (arriba) se evalúa con `self.slope`/`e_turn` CRUDOS, así que la
+decisión de "ya está centrado, dejar de girar" no tiene retraso. El problema
+era la EJECUCIÓN: `angular.z` pasa por un filtro exponencial (`_smooth`) antes
+de publicarse, y con `alpha=0.10` el comando real tardaba varios cientos de
+ms en bajar después de que el ángulo real ya estaba resuelto — durante ese
+tiempo el robot seguía rotando con un comando "viejo" más alto del que ya
+hacía falta, girando de más (reportado: ~30° extra). Subir el alpha hace que
+el comando publicado siga más de cerca al valor que pide la pendiente actual,
+reduciendo ese sobregiro por retraso sin perder el suavizado por completo.
 ```
 
 Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID normal

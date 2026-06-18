@@ -68,6 +68,14 @@ class LaneController(Node):
             ('sharp_turn_max_w',      0.80),   # rad/s — tope del giro de esquina (base + corrección)
             ('sharp_turn_speed_factor', 0.3),  # avance muy reducido mientras gira en la esquina
             ('max_anticipation_time', 0.8),    # s — tope de tiempo anticipando antes de forzar el giro cerrado
+            ('sharp_turn_smooth_alpha', 0.30),  # suavizado de angular.z SOLO durante el giro (antes
+                                                 # 0.10, igual que en AVANCE): con un alpha tan bajo,
+                                                 # el comando suavizado tardaba varios cientos de ms
+                                                 # en bajar después de que slope/e_turn ya indicaban
+                                                 # "centrado, dejar de girar" — ese retraso se traducía
+                                                 # en rotación física de más (~30° reportados). Un
+                                                 # alpha más alto responde más rápido a la caída de
+                                                 # slope/e_turn, sin perder el suavizado por completo
         ])
 
         gp = self.get_parameter
@@ -92,6 +100,7 @@ class LaneController(Node):
         self.sharp_turn_max_w           = float(gp('sharp_turn_max_w').value)
         self.sharp_turn_speed_factor    = float(gp('sharp_turn_speed_factor').value)
         self.max_anticipation_time      = float(gp('max_anticipation_time').value)
+        self.sharp_turn_smooth_alpha    = float(gp('sharp_turn_smooth_alpha').value)
 
         self.error         = None
         self.error_yellow  = None   # error solo-amarillo (ignora blanco) — usado SOLO al girar
@@ -288,7 +297,7 @@ class LaneController(Node):
             # desviado a la esquina.
             w_target = -(self.sharp_turn_kp_slope * self.slope + self.sharp_turn_kp_e * e_turn)
             w_target = max(-self.sharp_turn_max_w, min(self.sharp_turn_max_w, w_target))
-            cmd.angular.z = self._smooth(w_target, alpha=0.10)
+            cmd.angular.z = self._smooth(w_target, alpha=self.sharp_turn_smooth_alpha)
             cmd.linear.x  = self.v * self.sharp_turn_speed_factor
             self.pub.publish(cmd)
             # Salir del giro: línea ya recta (slope bajo) y centrada respecto
