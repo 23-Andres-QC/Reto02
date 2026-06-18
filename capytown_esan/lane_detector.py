@@ -108,6 +108,12 @@ class LaneDetector(Node):
             Image, '/image_raw', self.on_image, 10)
         self.pub_err   = self.create_publisher(Float32, '/lane_error', 10)
         self.pub_slope = self.create_publisher(Float32, '/lane_slope', 10)
+        # Error de centrado usando SOLO amarillo (ignora blanco por completo)
+        # — el controlador lo usa mientras gira una esquina, porque durante
+        # el giro a veces aparece un blanco que pertenece a OTRO tramo de
+        # la pista (no el carril actual), y el error combinado (Y+W)/2
+        # queda corrupto por ese blanco equivocado, contradiciendo el giro.
+        self.pub_err_yellow = self.create_publisher(Float32, '/lane_error_yellow', 10)
         self.pub_dbg = self.create_publisher(Image, '/lane/debug_image', 10)
         self.pub_servo = self.create_publisher(Int32, '/servo_s2', 10)
 
@@ -251,6 +257,14 @@ class LaneDetector(Node):
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
+        # Error solo-amarillo (ignora blanco): amarillo + mitad del carril,
+        # igual fórmula que el fallback solo-amarillo de _band_center pero
+        # calculado SIEMPRE que haya amarillo, sin importar si también hay
+        # blanco — para que el controlador pueda usarlo durante un giro sin
+        # que un blanco de otro tramo de pista lo contamine.
+        error_yellow_m = ((x_yellow + lane_width_px / 2.0) - w / 2.0) / self.px_per_meter \
+            if x_yellow is not None else float('nan')
+
         # Zona de seguridad ANTICIPADA: no solo reacciona cuando ya está cerca
         # de una línea — el margen de alerta se AGRANDA según el ángulo actual
         # (slope_m, centro vs inferior). Si la línea guía muestra que el carro
@@ -321,6 +335,10 @@ class LaneDetector(Node):
         slope_out      = Float32()
         slope_out.data = float(slope_m)
         self.pub_slope.publish(slope_out)
+
+        err_yellow_out      = Float32()
+        err_yellow_out.data = float(error_yellow_m)
+        self.pub_err_yellow.publish(err_yellow_out)
 
         if self.publish_debug:
             self._publish_debug(warp, mask_white, mask_yellow, band_rows,

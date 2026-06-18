@@ -91,6 +91,7 @@ class CalibHsvLab(Node):
         self.sub_odom = self.create_subscription(Odometry, str(gp('odom_topic').value), self.on_odom, 10)
         self.pub_dbg  = self.create_publisher(Image, '/calib/debug_image', 10)
         self.pub_err  = self.create_publisher(Float32, '/calib/error', 10)
+        self.pub_err_yellow = self.create_publisher(Float32, '/calib/error_yellow', 10)
 
         self.get_logger().info(
             'calib_hsv_lab listo — NO mueve el robot. '
@@ -244,6 +245,10 @@ class CalibHsvLab(Node):
 
         error_m = (center_px - w / 2.0) / self.px_per_meter if center_px is not None else float('nan')
 
+        # Error solo-amarillo (ignora blanco) — igual que lane_detector.py.
+        error_yellow_m = ((x_yellow + lane_width_px / 2.0) - w / 2.0) / self.px_per_meter \
+            if x_yellow is not None else float('nan')
+
         # Zona de seguridad ANTICIPADA: el margen se agranda según el ángulo
         # (slope_m) — igual que lane_detector.py. Ganancias bajadas (antes
         # 1.8/1.2) y tope de error — evita componer demasiado con PID+FF.
@@ -272,6 +277,10 @@ class CalibHsvLab(Node):
         out = Float32()
         out.data = float(error_m)
         self.pub_err.publish(out)
+
+        out_y = Float32()
+        out_y.data = float(error_yellow_m)
+        self.pub_err_yellow.publish(out_y)
 
         # ---- IMPRESIÓN EN CONSOLA: posición, ángulo, detección, línea guía ----
         yaw_deg = math.degrees(self.yaw) if self.yaw is not None else float('nan')

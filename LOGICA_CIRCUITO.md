@@ -43,6 +43,12 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
     robot a veces avanzaba tanto que perdía el amarillo antes de llegar a comprometerse al giro
   - **Actual**: franja definida en cm reales (`slope_lookahead_m=0.03`, 3cm) — suficiente margen
     para no perder la línea antes de girar, sin volver a anticipar varios cm como al principio
+- También se publica `/lane_error_yellow`: el error de centrado usando SOLO amarillo (amarillo +
+  mitad del carril), calculado SIEMPRE que haya amarillo, sin importar si también hay blanco —
+  a diferencia de `/lane_error`, que combina ambos colores cuando los dos están presentes y son
+  válidos. `lane_controller.py` usa `/lane_error_yellow` específicamente MIENTRAS GIRA una
+  esquina (ver sección "Esquina real" más abajo), porque durante el giro a veces aparece un
+  blanco que pertenece a otro tramo de la pista y corrompe el error combinado
 - Centroides pasan por filtro EMA antes de calcular error (reduce ruido frame a frame)
 - **Zona de seguridad ANTICIPADA** (margen base 30% del carril ≈6.6cm desde cada línea, empujón ×1.2,
   agrandado por ángulo con ganancia 0.7, tope de error ±0.20m): si el robot se acerca demasiado a
@@ -109,12 +115,14 @@ Dos formas de entrar en in_sharp_turn = True:
      Este tope de tiempo limita esa ventana.)
 
 Mientras in_sharp_turn:
-  w = -(sharp_turn_kp_slope * slope + sharp_turn_kp_e * e), limitado a ±sharp_turn_max_w
+  e_turn = error_yellow (SOLO amarillo, ignora blanco) — ver más abajo por qué
+  w = -(sharp_turn_kp_slope * slope + sharp_turn_kp_e * e_turn), limitado a ±sharp_turn_max_w
   angular.z = suavizado (alpha=0.10)
   linear.x  = v * sharp_turn_speed_factor (0.30 × 0.3 = 0.09 m/s) — muy reducida
   Sale del giro (in_sharp_turn = False) cuando:
-    |slope| < slope_curve_threshold (4cm)  Y  |e| < calib_tolerance (2.5cm)
-    → la línea ya está recta y centrada otra vez (la "siguiente" línea tras la esquina)
+    |slope| < slope_curve_threshold (4cm)  Y  |e_turn| < calib_tolerance (2.5cm)
+    → la línea ya está recta y centrada (respecto al amarillo) otra vez
+      (la "siguiente" línea tras la esquina)
 
 El giro NO es a una tasa fija/preprogramada (`sharp_turn_w` constante, versión
 anterior): eso generaba un giro de radio constante ("abierto") que no
@@ -122,8 +130,21 @@ necesariamente converge al centro real, y además no reflejaba lo que la
 cámara realmente estaba viendo en cada instante. Ahora el giro se deriva
 directamente de `sharp_turn_kp_slope * slope` — proporcional a la pendiente
 ACTUAL del amarillo: si la línea está muy de canto gira fuerte, si ya casi
-se enderezó gira poco. Se suma `sharp_turn_kp_e * e` para converger al
+se enderezó gira poco. Se suma `sharp_turn_kp_e * e_turn` para converger al
 centro si el robot llegó desviado a la esquina.
+
+**¿Por qué `e_turn` usa SOLO amarillo (`/lane_error_yellow`) y no el error
+combinado normal?** Mientras gira, a veces aparece un blanco que pertenece a
+OTRO tramo de la pista (no el carril actual — por ejemplo, el siguiente
+tramo recto visto de costado durante el giro). El error combinado `(Y+W)/2`
+quedaba corrupto por ese blanco equivocado: el robot "veía" un error que lo
+empujaba a NO girar, contradiciendo el giro que el amarillo sí pedía.
+`lane_detector.py` publica `/lane_error_yellow` = amarillo + mitad del
+carril (misma fórmula que el fallback solo-amarillo, pero calculada
+SIEMPRE que haya amarillo, sin importar si también hay blanco). El amarillo
+es la guía durante el giro; recién al volver a AVANCE (giro terminado) se
+usa de nuevo el error combinado normal, momento en el que el blanco que se
+vea ya corresponde al tramo correcto (delante del robot, no a un costado).
 ```
 
 Mientras `in_sharp_turn=True`, el control_loop sale antes de llegar al PID normal

@@ -94,6 +94,7 @@ class LaneController(Node):
         self.max_anticipation_time      = float(gp('max_anticipation_time').value)
 
         self.error         = None
+        self.error_yellow  = None   # error solo-amarillo (ignora blanco) — usado SOLO al girar
         self.slope          = 0.0   # pendiente de la línea guía (0 = recta, sin dato aún)
         self.last_error    = 0.0
         self.smooth_w      = 0.0
@@ -119,6 +120,7 @@ class LaneController(Node):
         self.in_sharp_turn = False
 
         self.sub_err   = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
+        self.sub_err_yellow = self.create_subscription(Float32, '/lane_error_yellow', self.on_error_yellow, 10)
         self.sub_slope = self.create_subscription(Float32, '/lane_slope', self.on_slope, 10)
         self.sub_imu  = self.create_subscription(Imu, imu_topic, self.on_imu, 10)
         self.sub_odom = self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
@@ -169,6 +171,12 @@ class LaneController(Node):
                 self.start_time  = self.last_rx
                 self.get_logger().info(
                     f'Color detectado — esperando {self.start_delay:.0f}s antes de avanzar...')
+
+    def on_error_yellow(self, msg):
+        # Error solo-amarillo (ignora blanco). Si llega NaN (sin amarillo)
+        # se mantiene el último valor conocido — igual criterio que slope.
+        if not math.isnan(msg.data):
+            self.error_yellow = msg.data
 
     def on_slope(self, msg):
         # Pendiente del amarillo (banda central vs inferior). Si llega NaN
@@ -253,6 +261,20 @@ class LaneController(Node):
             self.anticipation_timer = 0.0   # ya se comprometió al giro, no sigue acumulando
 
         if self.in_sharp_turn:
+            # Mientras gira, el centrado usa SOLO amarillo (error_yellow),
+            # no el error combinado (Y+W) — durante el giro a veces aparece
+            # un blanco que pertenece a OTRO tramo de la pista (no el carril
+            # actual, ej. el siguiente tramo recto visto de costado), y el
+            # error combinado quedaba corrupto por ese blanco equivocado,
+            # contradiciendo el giro (el robot "veía" un error que lo
+            # empujaba a no girar). El amarillo es la guía durante el giro;
+            # recién al volver a AVANCE (giro terminado) se vuelve a usar
+            # el error combinado normal, momento en el que el blanco que
+            # se vea ya corresponde al tramo correcto (delante del robot).
+            e_turn = self.error_yellow if self.error_yellow is not None else e
+            if abs(e_turn) < 0.01:
+                e_turn = 0.0
+
             # El giro NO es a un ritmo fijo/preprogramado (eso generaba un
             # giro de radio constante — "abierto" — que no necesariamente
             # converge al centro real, perdiendo el amarillo en vez de
@@ -262,16 +284,19 @@ class LaneController(Node):
             # de canto, gira fuerte; si ya casi se enderezó, gira poco —
             # proporcional a lo que el amarillo muestra en cada frame, no
             # a una tasa fija. Se suma la corrección sobre el error lateral
-            # ACTUAL para converger al centro si llegó desviado a la esquina.
-            w_target = -(self.sharp_turn_kp_slope * self.slope + self.sharp_turn_kp_e * e)
+            # (solo-amarillo) ACTUAL para converger al centro si llegó
+            # desviado a la esquina.
+            w_target = -(self.sharp_turn_kp_slope * self.slope + self.sharp_turn_kp_e * e_turn)
             w_target = max(-self.sharp_turn_max_w, min(self.sharp_turn_max_w, w_target))
             cmd.angular.z = self._smooth(w_target, alpha=0.10)
             cmd.linear.x  = self.v * self.sharp_turn_speed_factor
             self.pub.publish(cmd)
-            # Salir del giro: línea ya recta (slope bajo) y centrada (e bajo)
-            # — es decir, ya llegó al centro de la proyección de las líneas
-            # nuevas, no solo "se ve recta" por casualidad de ángulo.
-            if abs(self.slope) < self.slope_curve_threshold and abs(e) < self.calib_tolerance:
+            # Salir del giro: línea ya recta (slope bajo) y centrada respecto
+            # al amarillo (e_turn bajo) — es decir, ya llegó al centro de la
+            # proyección de las líneas nuevas, no solo "se ve recta" por
+            # casualidad de ángulo. Usa e_turn (solo-amarillo), no el error
+            # combinado, por la misma razón de arriba.
+            if abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance:
                 self.in_sharp_turn = False
             return
 

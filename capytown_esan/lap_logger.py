@@ -121,6 +121,7 @@ class LapLogger(Node):
         self.last_y = None
 
         self.error  = None   # último /lane_error válido (m)
+        self.error_yellow = None   # último /lane_error_yellow válido (m) — usado al girar
         self.slope  = 0.0    # último /lane_slope válido (m)
         self.last_err_rx = None
 
@@ -153,6 +154,7 @@ class LapLogger(Node):
 
         self.sub_img  = self.create_subscription(Image, image_topic, self.on_image, 10)
         self.sub_err  = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
+        self.sub_err_yellow = self.create_subscription(Float32, '/lane_error_yellow', self.on_error_yellow, 10)
         self.sub_slope = self.create_subscription(Float32, '/lane_slope', self.on_slope, 10)
         self.sub_cmd  = self.create_subscription(Twist, '/cmd_vel', self.on_cmd_vel, 10)
         self.sub_odom = self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
@@ -191,6 +193,10 @@ class LapLogger(Node):
         self.last_err_rx = time.time()
         self._w_err.writerow([f'{self._elapsed():.3f}', f'{msg.data*100.0:.2f}'])
         self._f_err.flush()
+
+    def on_error_yellow(self, msg):
+        if not math.isnan(msg.data):
+            self.error_yellow = msg.data
 
     def on_slope(self, msg):
         if not math.isnan(msg.data):
@@ -260,12 +266,19 @@ class LapLogger(Node):
         self._f_slope.flush()
 
         if self.in_sharp_turn:
-            if abs(self.slope) < self.slope_curve_threshold and abs(e) < self.calib_tolerance:
+            # Igual que lane_controller.py: mientras gira, la condición de
+            # salida usa el error SOLO-AMARILLO (ignora blanco), no el
+            # combinado — un blanco de otro tramo de pista puede corromper
+            # el error combinado durante el giro.
+            e_turn = self.error_yellow if self.error_yellow is not None else e
+            if abs(e_turn) < 0.01:
+                e_turn = 0.0
+            if abs(self.slope) < self.slope_curve_threshold and abs(e_turn) < self.calib_tolerance:
                 self.in_sharp_turn = False
                 self.turns_done += 1
                 self._w_giros.writerow([
                     self.turns_done, f'{self._elapsed():.3f}',
-                    f'{self.slope*100.0:.2f}', f'{e*100.0:.2f}'])
+                    f'{self.slope*100.0:.2f}', f'{e_turn*100.0:.2f}'])
                 self._f_giros.flush()
                 self.get_logger().info(f'Giro cerrado {self.turns_done}/{self.target_turns} completado')
                 if self.turns_done >= self.target_turns and not self.finishing:
