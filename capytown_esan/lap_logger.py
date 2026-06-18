@@ -1,56 +1,52 @@
 #!/usr/bin/env python3
-"""CapyTown lap_plotter - RC-2.
+"""CapyTown lap_logger - RC-2.
 
-Script standalone e independiente: NO modifica ni depende de la lógica interna
-de lane_detector.py / lane_controller.py, y NUNCA publica /cmd_vel (no mueve
-el robot, no afecta el control). Solo escucha y dibuja.
+Reemplaza a lap_plotter.py: en vez de graficar en vivo, este nodo SOLO
+REGISTRA datos en archivos CSV (uno por serie). No depende de matplotlib,
+así que es más liviano y robusto — y separa el registro (en vivo, mientras
+el carrito corre) del graficado (después, con plot_lap_logs.py, cuantas
+veces quieras, sin volver a correr el robot).
 
-Hace su PROPIA detección de amarillo/blanco a partir de /image_raw (mismo
-pipeline que calib_hsv_lab.py: IPM + HSV + morfología + filtro PCA + banda
-inferior) únicamente para poder graficar esos puntos — no usa los topics
-internos del detector para eso.
+Standalone e independiente: NO modifica ni depende de la lógica interna de
+lane_detector.py / lane_controller.py, y NUNCA publica /cmd_vel (no mueve el
+robot, no afecta el control). Solo escucha y escribe a disco.
 
-Además escucha:
-  /lane_error  → error lateral (cm) en el tiempo, y señal de INICIO del
-                 registro (primer valor válido, no NaN)
-  /cmd_vel     → velocidad lineal y angular comandada en el tiempo
-  /odom_raw    → trayectoria x,y del carrito
+Cada fila se escribe y se hace flush() inmediatamente — si se corta con
+Ctrl+C o se cae el proceso, todo lo ya recibido queda guardado en disco,
+no se pierde por no haber llegado al final.
 
-Para saber cuándo se completaron las 3 vueltas, replica — SOLO COMO LECTOR,
-sin tocar ni publicar nada — el mismo criterio que usa lane_controller.py
-para entrar/salir de un giro cerrado de esquina (mismos umbrales que
-config/pid_params.yaml): magnitud de /lane_slope o tiempo anticipando, y
-salida cuando vuelve a estar recto y centrado. La pista tiene 3 vueltas de
-4 esquinas cada una, así que 12 giros cerrados completados = 3 vueltas.
-Tras el giro 12, se sigue registrando 10cm más de avance (odometría) antes
-de terminar, para no cortar el gráfico justo en la última esquina.
+Archivos generados en `output_dir` (parámetro ROS, '/root' por defecto):
+  log_trayectoria.csv        t,x,y                     (de /odom_raw)
+  log_velocidades.csv        t,linear,angular           (de /cmd_vel)
+  log_error.csv              t,error_cm                 (de /lane_error)
+  log_deteccion_amarillo.csv t,pos_cm                    (detección propia, banda inferior)
+  log_deteccion_blanco.csv   t,pos_cm                    (detección propia, banda inferior)
+  log_slope.csv              t,slope_cm,in_sharp_turn,anticipation_timer
+                              — para diagnosticar a qué distancia/tiempo real
+                              se dispara el giro, y por qué algunas esquinas
+                              no llegan a contarse como giro cerrado
+  log_giros.csv              giro_num,t,slope_cm,e_cm   (cada vez que se
+                              completa un giro cerrado)
 
-TIEMPO REAL: cada `plot_interval_s` segundos (1.5s por defecto) se
-sobreescriben los 3 PNG con los datos acumulados hasta ese momento — si el
-carrito se frena, se mata el proceso, o nunca llega a completar las 3
-vueltas, en el disco ya van a estar las imágenes con el progreso hecho
-hasta ese instante, no solo al final.
-
-Genera 3 imágenes en `output_dir` (parámetro ROS, '/root' por defecto):
-  velocidades_errores.png → velocidad lineal/angular y error lateral en el tiempo
-  deteccion_colores.png   → posición de amarillo y blanco detectados en el tiempo
-  recorrido.png           → trayectoria x,y del carrito
+Igual que antes, para saber cuándo van las 3 vueltas (12 giros + 10cm)
+replica — SOLO COMO LECTOR, sin tocar ni publicar nada — el mismo criterio
+que usa lane_controller.py para entrar/salir de un giro cerrado de esquina
+(mismos umbrales que config/pid_params.yaml).
 
 Uso:
-  python3 lap_plotter.py
-  python3 lap_plotter.py --ros-args -p output_dir:=/root/graficos
+  python3 lap_logger.py
+  python3 lap_logger.py --ros-args -p output_dir:=/root/logs
 
-Requiere matplotlib (pip install matplotlib si falta).
+Después, para graficar:
+  python3 plot_lap_logs.py
 """
+import csv
 import math
+import os
 import time
 
 import cv2
 import numpy as np
-
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 import rclpy
 from rclpy.node import Node
@@ -61,16 +57,15 @@ from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 
 
-class LapPlotter(Node):
+class LapLogger(Node):
 
     def __init__(self):
-        super().__init__('lap_plotter')
+        super().__init__('lap_logger')
 
         self.declare_parameters('', [
             ('image_topic', '/image_raw'),
             ('odom_topic',  '/odom_raw'),
             ('output_dir',  '/root'),
-            ('plot_interval_s', 1.5),
             ('target_turns', 12),     # 3 vueltas x 4 esquinas
             ('extra_distance_m', 0.10),
             # Mismos umbrales que config/pid_params.yaml (lane_controller.py) —
@@ -89,7 +84,6 @@ class LapPlotter(Node):
         image_topic = str(gp('image_topic').value)
         odom_topic  = str(gp('odom_topic').value)
         self.output_dir       = str(gp('output_dir').value)
-        self.plot_interval_s  = float(gp('plot_interval_s').value)
         self.target_turns     = int(gp('target_turns').value)
         self.extra_distance_m = float(gp('extra_distance_m').value)
 
@@ -101,6 +95,8 @@ class LapPlotter(Node):
 
         self.lane_width_m = float(gp('lane_width_m').value)
         self.px_per_meter = float(gp('px_per_meter').value)
+
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # HSV — mismos rangos que lane_detector.py / calib_hsv_lab.py
         self.white_lo = np.array([0, 0, 170], dtype=np.uint8)
@@ -138,12 +134,22 @@ class LapPlotter(Node):
         self.finish_trigger_x = None
         self.finish_trigger_y = None
 
-        # ---- Series registradas ----
-        self.traj_x, self.traj_y = [], []
-        self.vel_t, self.vel_lin, self.vel_ang = [], [], []
-        self.err_t,  self.err_v  = [], []
-        self.det_t_y, self.det_y = [], []
-        self.det_t_w, self.det_w = [], []
+        # ---- Archivos CSV (abiertos en modo texto, flush por fila) ----
+        self._f_traj  = open(f'{self.output_dir}/log_trayectoria.csv', 'w', newline='')
+        self._f_vel   = open(f'{self.output_dir}/log_velocidades.csv', 'w', newline='')
+        self._f_err   = open(f'{self.output_dir}/log_error.csv', 'w', newline='')
+        self._f_det_y = open(f'{self.output_dir}/log_deteccion_amarillo.csv', 'w', newline='')
+        self._f_det_w = open(f'{self.output_dir}/log_deteccion_blanco.csv', 'w', newline='')
+        self._f_slope = open(f'{self.output_dir}/log_slope.csv', 'w', newline='')
+        self._f_giros = open(f'{self.output_dir}/log_giros.csv', 'w', newline='')
+
+        self._w_traj  = csv.writer(self._f_traj);  self._w_traj.writerow(['t', 'x', 'y'])
+        self._w_vel   = csv.writer(self._f_vel);   self._w_vel.writerow(['t', 'linear', 'angular'])
+        self._w_err   = csv.writer(self._f_err);   self._w_err.writerow(['t', 'error_cm'])
+        self._w_det_y = csv.writer(self._f_det_y); self._w_det_y.writerow(['t', 'pos_cm'])
+        self._w_det_w = csv.writer(self._f_det_w); self._w_det_w.writerow(['t', 'pos_cm'])
+        self._w_slope = csv.writer(self._f_slope); self._w_slope.writerow(['t', 'slope_cm', 'in_sharp_turn', 'anticipation_timer'])
+        self._w_giros = csv.writer(self._f_giros); self._w_giros.writerow(['giro_num', 't', 'slope_cm', 'e_cm'])
 
         self.sub_img  = self.create_subscription(Image, image_topic, self.on_image, 10)
         self.sub_err  = self.create_subscription(Float32, '/lane_error', self.on_error, 10)
@@ -151,15 +157,14 @@ class LapPlotter(Node):
         self.sub_cmd  = self.create_subscription(Twist, '/cmd_vel', self.on_cmd_vel, 10)
         self.sub_odom = self.create_subscription(Odometry, odom_topic, self.on_odom, 10)
 
-        # Tick de lógica de giro (replica de lectura) a 30Hz
+        # Tick de lógica de giro (replica de lectura) a 30Hz — también
+        # registra slope/estado en cada tick para diagnóstico fino.
         self.turn_timer = self.create_timer(1.0 / 30.0, self._turn_logic_tick)
-        # Guardado de gráficos en tiempo real
-        self.plot_timer = self.create_timer(self.plot_interval_s, self._save_all_plots)
 
         self.get_logger().info(
-            f'lap_plotter listo — esperando color para iniciar. '
+            f'lap_logger listo — esperando color para iniciar. '
             f'Objetivo: {self.target_turns} giros cerrados + {self.extra_distance_m*100:.0f}cm. '
-            f'Gráficos en {self.output_dir}/ cada {self.plot_interval_s}s.')
+            f'CSVs en {self.output_dir}/')
 
     # ------------------------------------------------------------------
     def _elapsed(self):
@@ -184,8 +189,8 @@ class LapPlotter(Node):
             return
         self.error = msg.data
         self.last_err_rx = time.time()
-        self.err_t.append(self._elapsed())
-        self.err_v.append(msg.data * 100.0)   # cm
+        self._w_err.writerow([f'{self._elapsed():.3f}', f'{msg.data*100.0:.2f}'])
+        self._f_err.flush()
 
     def on_slope(self, msg):
         if not math.isnan(msg.data):
@@ -194,9 +199,8 @@ class LapPlotter(Node):
     def on_cmd_vel(self, msg):
         if not self.started or self.done:
             return
-        self.vel_t.append(self._elapsed())
-        self.vel_lin.append(msg.linear.x)
-        self.vel_ang.append(msg.angular.z)
+        self._w_vel.writerow([f'{self._elapsed():.3f}', f'{msg.linear.x:.4f}', f'{msg.angular.z:.4f}'])
+        self._f_vel.flush()
 
     def on_odom(self, msg):
         x = msg.pose.pose.position.x
@@ -208,19 +212,19 @@ class LapPlotter(Node):
         if self.x0 is None:
             self.x0, self.y0 = x, y
 
-        self.traj_x.append(x)
-        self.traj_y.append(y)
+        self._w_traj.writerow([f'{self._elapsed():.3f}', f'{x:.4f}', f'{y:.4f}'])
+        self._f_traj.flush()
 
         if self.finishing:
             dist = math.hypot(x - self.finish_trigger_x, y - self.finish_trigger_y)
             if dist >= self.extra_distance_m:
-                self._finish(x, y)
+                self._finish()
 
     # ------------------------------------------------------------------
     def _turn_logic_tick(self):
         """Replica de SOLO LECTURA del criterio de giro cerrado de
         lane_controller.py — no publica nada, no decide nada del control
-        real, solo cuenta para saber cuándo van 3 vueltas (12 giros)."""
+        real, solo cuenta y registra para diagnosticar."""
         if not self.started or self.done:
             return
         now = time.time()
@@ -250,10 +254,19 @@ class LapPlotter(Node):
             self.in_sharp_turn = True
             self.anticipation_timer = 0.0
 
+        self._w_slope.writerow([
+            f'{self._elapsed():.3f}', f'{self.slope*100.0:.2f}',
+            int(self.in_sharp_turn), f'{self.anticipation_timer:.3f}'])
+        self._f_slope.flush()
+
         if self.in_sharp_turn:
             if abs(self.slope) < self.slope_curve_threshold and abs(e) < self.calib_tolerance:
                 self.in_sharp_turn = False
                 self.turns_done += 1
+                self._w_giros.writerow([
+                    self.turns_done, f'{self._elapsed():.3f}',
+                    f'{self.slope*100.0:.2f}', f'{e*100.0:.2f}'])
+                self._f_giros.flush()
                 self.get_logger().info(f'Giro cerrado {self.turns_done}/{self.target_turns} completado')
                 if self.turns_done >= self.target_turns and not self.finishing:
                     self.finishing = True
@@ -339,93 +352,38 @@ class LapPlotter(Node):
 
         t = self._elapsed()
         if xy is not None:
-            self.det_t_y.append(t)
-            self.det_y.append((xy - w / 2.0) / self.px_per_meter * 100.0)   # cm
+            self._w_det_y.writerow([f'{t:.3f}', f'{(xy - w/2.0)/self.px_per_meter*100.0:.2f}'])
+            self._f_det_y.flush()
         if xw is not None:
-            self.det_t_w.append(t)
-            self.det_w.append((xw - w / 2.0) / self.px_per_meter * 100.0)   # cm
+            self._w_det_w.writerow([f'{t:.3f}', f'{(xw - w/2.0)/self.px_per_meter*100.0:.2f}'])
+            self._f_det_w.flush()
 
     # ------------------------------------------------------------------
-    def _finish(self, xf, yf):
+    def _finish(self):
         self.done = True
-        dist_final = math.hypot(xf - self.x0, yf - self.y0)
         self.get_logger().info(
             f'¡Registro terminado! {self.turns_done} giros cerrados completados. '
-            f'Inicial=({self.x0:.3f}, {self.y0:.3f})  Final=({xf:.3f}, {yf:.3f})  '
-            f'distancia inicio↔fin={dist_final * 100:.1f}cm')
-        self._save_all_plots()
-        self.get_logger().info(f'Gráficos finales guardados en {self.output_dir}/')
+            f'CSVs guardados en {self.output_dir}/ — corre plot_lap_logs.py para graficar.')
+        self._close_files()
 
-    def _save_all_plots(self):
-        if not self.started:
-            return
-        self._plot_velocidades_errores()
-        self._plot_deteccion()
-        self._plot_recorrido()
-
-    def _plot_velocidades_errores(self):
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-
-        ax1.plot(self.vel_t, self.vel_lin, '-b', label='Velocidad lineal (m/s)')
-        ax1.plot(self.vel_t, self.vel_ang, '-g', label='Velocidad angular (rad/s)')
-        ax1.axhline(0, color='black', linewidth=0.8)
-        ax1.set_ylabel('velocidad')
-        ax1.set_title(f'Velocidades y error — {self.turns_done}/{self.target_turns} giros cerrados')
-        ax1.legend()
-        ax1.grid(True)
-
-        ax2.plot(self.err_t, self.err_v, '-r', label='Error lateral (cm)')
-        ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.set_xlabel('tiempo (s)')
-        ax2.set_ylabel('error (cm)')
-        ax2.legend()
-        ax2.grid(True)
-
-        fig.tight_layout()
-        fig.savefig(f'{self.output_dir}/velocidades_errores.png')
-        plt.close(fig)
-
-    def _plot_deteccion(self):
-        fig = plt.figure(figsize=(10, 4))
-        plt.plot(self.det_t_y, self.det_y, '-', color='gold', label='Amarillo (cm desde el centro)')
-        plt.plot(self.det_t_w, self.det_w, '-', color='gray', label='Blanco (cm desde el centro)')
-        plt.axhline(0, color='black', linewidth=0.8)
-        plt.xlabel('tiempo (s)')
-        plt.ylabel('posición (cm)')
-        plt.title('Detección de carril — amarillo y blanco')
-        plt.legend()
-        plt.grid(True)
-        fig.tight_layout()
-        fig.savefig(f'{self.output_dir}/deteccion_colores.png')
-        plt.close(fig)
-
-    def _plot_recorrido(self):
-        fig = plt.figure(figsize=(6, 6))
-        plt.plot(self.traj_x, self.traj_y, '-b', linewidth=1.5, label='Recorrido')
-        if self.x0 is not None:
-            plt.plot(self.x0, self.y0, 'go', markersize=10, label='Inicio')
-        if self.traj_x:
-            plt.plot(self.traj_x[-1], self.traj_y[-1], 'rx', markersize=10, markeredgewidth=2, label='Actual/Fin')
-        plt.xlabel('x (m)')
-        plt.ylabel('y (m)')
-        plt.title(f'Recorrido del carrito — {self.turns_done}/{self.target_turns} giros cerrados')
-        plt.axis('equal')
-        plt.legend()
-        plt.grid(True)
-        fig.tight_layout()
-        fig.savefig(f'{self.output_dir}/recorrido.png')
-        plt.close(fig)
+    def _close_files(self):
+        for f in (self._f_traj, self._f_vel, self._f_err,
+                  self._f_det_y, self._f_det_w, self._f_slope, self._f_giros):
+            try:
+                f.close()
+            except Exception:
+                pass
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LapPlotter()
+    node = LapLogger()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node._save_all_plots()
+        node._close_files()
         node.destroy_node()
         rclpy.shutdown()
 
