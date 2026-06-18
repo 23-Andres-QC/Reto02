@@ -405,7 +405,12 @@ class LaneDetector(Node):
             return float('nan')   # línea horizontal dentro de la banda — sin pendiente útil
         tangent = vx / vy   # dx/dy real — mismo px_per_meter en ambos ejes tras el IPM, así que
                              # el cociente ya es adimensional (no hace falta dividir por px_per_meter)
-        return tangent * self.slope_scale_m
+        # OJO signo: tangent = dx/dy según "y" CRECE hacia abajo (hacia el robot,
+        # más cerca). La convención histórica de slope_m era x_LEJOS - x_CERCA
+        # (el código viejo evaluaba la línea en y_top=0 (lejos) y y_bot=altura-1
+        # (cerca) y restaba top-bot). Eso equivale a -tangent, no +tangent. Sin
+        # este signo, el giro salía hacia el lado contrario.
+        return -tangent * self.slope_scale_m
 
     def _ema_update(self, attr, value):
         """Filtro exponencial: suaviza la lectura cruda, resetea si se pierde detección."""

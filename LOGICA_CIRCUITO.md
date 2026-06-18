@@ -48,6 +48,13 @@ Referencia única. Para cambiar comportamiento, modificar esto primero y refleja
     anticipando ~5cm; franja de 15% de imagen sin unidades físicas resultó demasiado angosta en
     la práctica (perdía el amarillo antes del giro); actual: 3cm reales, con `slope_scale_m`
     separado para no romper la calibración de los umbrales
+  - **Bug de signo (corregido)**: al introducir `slope_scale_m` se devolvía `tangent *
+    slope_scale_m` directamente. `tangent = vx/vy` representa dx/dy según "y" CRECE (hacia
+    abajo en la imagen, hacia el robot), pero la convención histórica de `slope_m` era
+    x_LEJOS − x_CERCA (la fórmula vieja evaluaba la línea en el borde lejano y en el cercano y
+    restaba lejos−cerca). Eso equivale a `-tangent`, no a `+tangent` — el signo estaba
+    invertido, así que a veces el giro salía hacia el lado contrario al real. Corregido a
+    `-tangent * slope_scale_m`
 - También se publica `/lane_error_yellow`: el error de centrado usando SOLO amarillo (amarillo +
   mitad del carril), calculado SIEMPRE que haya amarillo, sin importar si también hay blanco —
   a diferencia de `/lane_error`, que combina ambos colores cuando los dos están presentes y son

@@ -155,7 +155,9 @@ class CalibHsvLab(Node):
         if abs(vy) < 1e-6:
             return float('nan')
         tangent = vx / vy
-        return tangent * self.slope_scale_m
+        # Signo invertido respecto a tangent puro — ver lane_detector.py
+        # (convención histórica: x_LEJOS - x_CERCA, no x_CERCA - x_LEJOS)
+        return -tangent * self.slope_scale_m
 
     def _ema(self, attr, value):
         prev = getattr(self, attr)
